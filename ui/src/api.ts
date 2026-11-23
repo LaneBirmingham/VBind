@@ -91,6 +91,7 @@ export interface Status {
   outputs: {
     xbox360: { available: boolean; error?: string | null };
     vjoy: { available: boolean; error?: string | null; devices: any[] };
+    keyboard?: { available: boolean; error?: string | null };
   };
   input_error?: string | null;
   integrations?: { id: string; valid: boolean }[];
@@ -123,7 +124,7 @@ export interface DeviceLive {
   buttons: number[];
 }
 
-export type OutputKind = "xbox360" | "vjoy" | "integration";
+export type OutputKind = "xbox360" | "vjoy" | "integration" | "keyboard";
 
 export interface OutputLive {
   name: string;

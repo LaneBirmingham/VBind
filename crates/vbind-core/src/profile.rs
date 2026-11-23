@@ -266,12 +266,34 @@ pub struct CompiledOutput {
     pub vjoy_id: u8,
     /// The integration definition, for `integration` outputs.
     pub integration: Option<Arc<Integration>>,
-    /// Settings JSON for the integration's settings channel.
+    /// Settings JSON for the integration's settings channel, with mapped
+    /// settings at their neutral (0) value.
     pub settings_json: Option<String>,
+    /// The profile's fixed setting values, kept for rebuilding the JSON when
+    /// a mapped setting changes.
+    pub settings: IndexMap<String, serde_json::Value>,
+    /// Indices of the integration settings the profile maps, in order.
+    pub live_settings: Vec<usize>,
 }
+
+/// Map keys address integration settings as `output.settings.<setting>`.
+pub const SETTINGS_PREFIX: &str = "settings.";
 
 impl CompiledOutput {
     pub fn parse_control(&self, name: &str) -> Result<OutputControl, String> {
+        if let (Some(i), Some(key)) = (&self.integration, name.strip_prefix(SETTINGS_PREFIX)) {
+            let Some(idx) = i.setting_index(key) else {
+                let names: Vec<&str> = i.settings.keys().map(String::as_str).collect();
+                let hint = expr::suggest(key, names.iter().copied()).map(|s| format!(" Did you mean '{s}'?")).unwrap_or_default();
+                let list = if names.is_empty() { "it has none".to_string() } else { format!("settings: {}", names.join(", ")) };
+                return Err(format!("{} has no setting '{key}'.{hint} ({list})", i.name));
+            };
+            if i.channels.settings.is_none() {
+                return Err(format!("{} has no settings channel, so its settings cannot change while playing", i.name));
+            }
+            crate::integration::check_setting_mappable(&i.settings[idx])?;
+            return Ok(OutputControl::IntegrationSetting(idx as u16));
+        }
         match &self.integration {
             Some(i) => i.control_index(name).map(|x| OutputControl::Integration(x as u16)).ok_or_else(|| {
                 let names: Vec<&str> = i.controls.keys().map(String::as_str).collect();
@@ -289,20 +311,61 @@ impl CompiledOutput {
         }
     }
 
+    fn integration_setting(&self, c: OutputControl) -> Option<(&String, &crate::integration::SettingDef)> {
+        match (c, &self.integration) {
+            (OutputControl::IntegrationSetting(i), Some(def)) => def.settings.get_index(i as usize),
+            _ => None,
+        }
+    }
+
     pub fn control_id(&self, c: OutputControl) -> String {
+        if let Some((id, _)) = self.integration_setting(c) {
+            return format!("{SETTINGS_PREFIX}{id}");
+        }
         self.integration_control(c).map(|(id, _)| id.clone()).unwrap_or_else(|| c.id())
     }
 
     pub fn control_label(&self, c: OutputControl) -> String {
+        if let Some((_, s)) = self.integration_setting(c) {
+            return s.label.clone();
+        }
         self.integration_control(c).map(|(_, x)| x.label.clone()).unwrap_or_else(|| c.default_label())
     }
 
+    /// A setting with two choices or on/off acts like a button; any other
+    /// setting takes the raw value, shown like an axis.
     pub fn control_kind(&self, c: OutputControl) -> ControlKind {
+        if let Some((_, s)) = self.integration_setting(c) {
+            let two_way = s.choices.len() == 2 || (s.choices.is_empty() && s.default.is_boolean());
+            return if two_way { ControlKind::Button } else { ControlKind::Axis };
+        }
         self.integration_control(c).map(|(_, x)| x.kind).unwrap_or_else(|| c.kind())
     }
 
+    /// Keyboard outputs: mouse pixels per second at full deflection.
+    pub fn mouse_speed(&self) -> f64 {
+        self.settings.get("mouse_speed").and_then(|v| v.as_f64()).unwrap_or(crate::keyboard::DEFAULT_MOUSE_SPEED)
+    }
+
+    /// Keyboard outputs: wheel notches per second at full deflection.
+    pub fn wheel_speed(&self) -> f64 {
+        self.settings.get("wheel_speed").and_then(|v| v.as_f64()).unwrap_or(crate::keyboard::DEFAULT_WHEEL_SPEED)
+    }
+
     pub fn neutral_report(&self) -> Report {
-        Report::neutral(self.kind, self.integration.as_ref().map_or(0, |i| i.controls.len()))
+        Report::neutral(
+            self.kind,
+            self.integration.as_ref().map_or(0, |i| i.controls.len()),
+            self.integration.as_ref().map_or(0, |i| i.settings.len()),
+        )
+    }
+
+    /// Settings JSON for the current values of the mapped settings
+    /// (`values` is the report's per-setting values).
+    pub fn live_settings_json(&self, values: &[f64]) -> Result<Option<String>, String> {
+        let Some(def) = &self.integration else { return Ok(None) };
+        let live: Vec<(usize, f64)> = self.live_settings.iter().map(|&i| (i, values.get(i).copied().unwrap_or(0.0))).collect();
+        def.settings_json_live(&self.settings, &live).map_err(|e| e.into_iter().map(|d| d.message).collect::<Vec<_>>().join("; "))
     }
 
     /// Default display name: "Virtual Xbox 360", "Space Engineers 2".
@@ -312,6 +375,7 @@ impl CompiledOutput {
             (OutputKind::Vjoy, _) => format!("Virtual stick (vJoy {})", self.vjoy_id),
             (OutputKind::Integration, Some(i)) => i.name.clone(),
             (OutputKind::Integration, None) => "Game integration".into(),
+            (OutputKind::Keyboard, _) => "Keyboard and mouse".into(),
         }
     }
 }
@@ -457,6 +521,7 @@ impl Profile {
         let mut vjoy_ids = Vec::new();
         let mut resolved: Vec<(Option<Arc<Integration>>, Option<String>)> = Vec::new();
         let mut used_integrations: Vec<&str> = Vec::new();
+        let mut keyboard_outputs = 0;
         for (name, out) in &self.outputs {
             let path = format!("outputs.{name}");
             check_name("output", name, &mut errors, path.clone());
@@ -473,7 +538,13 @@ impl Profile {
                     }
                     vjoy_ids.push(id);
                 }
-                OutputKind::Xbox360 | OutputKind::Integration => {
+                OutputKind::Xbox360 | OutputKind::Integration | OutputKind::Keyboard => {
+                    if out.kind == OutputKind::Keyboard {
+                        if keyboard_outputs > 0 {
+                            errors.push(diag(path.clone(), "there is one keyboard and mouse; use one keyboard output"));
+                        }
+                        keyboard_outputs += 1;
+                    }
                     if out.vjoy_id.is_some() {
                         errors.push(diag(format!("{path}.vjoy_id"), "vjoy_id only applies to vjoy outputs"));
                     }
@@ -506,8 +577,18 @@ impl Profile {
                 if out.integration.is_some() {
                     errors.push(diag(format!("{path}.integration"), "integration only applies to integration outputs"));
                 }
-                if !out.settings.is_empty() {
-                    errors.push(diag(format!("{path}.settings"), "settings only apply to integration outputs"));
+                if out.kind == OutputKind::Keyboard {
+                    for (k, v) in &out.settings {
+                        match (k.as_str(), v.as_f64()) {
+                            ("mouse_speed", Some(n)) if (1.0..=20_000.0).contains(&n) => {}
+                            ("wheel_speed", Some(n)) if (0.1..=200.0).contains(&n) => {}
+                            ("mouse_speed", _) => errors.push(diag(format!("{path}.settings.{k}"), "mouse_speed is pixels per second at full deflection, 1 to 20000")),
+                            ("wheel_speed", _) => errors.push(diag(format!("{path}.settings.{k}"), "wheel_speed is wheel notches per second at full deflection, 0.1 to 200")),
+                            _ => errors.push(diag(format!("{path}.settings.{k}"), "keyboard outputs take mouse_speed and wheel_speed")),
+                        }
+                    }
+                } else if !out.settings.is_empty() {
+                    errors.push(diag(format!("{path}.settings"), "settings only apply to integration and keyboard outputs"));
                 }
             }
             resolved.push(entry);
@@ -560,7 +641,7 @@ impl Profile {
             }
         }
 
-        let outputs: Vec<CompiledOutput> = self
+        let mut outputs: Vec<CompiledOutput> = self
             .outputs
             .iter()
             .zip(resolved)
@@ -571,6 +652,8 @@ impl Profile {
                 vjoy_id: o.vjoy_id.unwrap_or(1),
                 integration,
                 settings_json,
+                settings: o.settings.clone(),
+                live_settings: Vec::new(),
             })
             .collect();
 
@@ -632,6 +715,38 @@ impl Profile {
                 errors.push(diag(format!("hints.{key}"), m));
             } else if hint.chars().count() > 160 {
                 errors.push(diag(format!("hints.{key}"), "keep hints under 160 characters"));
+            }
+        }
+
+        // Settings the map drives: not also fixed under the output's
+        // settings, and the channel must hold their longest values.
+        for (oi, o) in outputs.iter_mut().enumerate() {
+            let Some(def) = o.integration.clone() else { continue };
+            let mut live: Vec<(usize, &str)> = mappings
+                .iter()
+                .filter(|m| m.output == oi)
+                .filter_map(|m| match m.control {
+                    OutputControl::IntegrationSetting(i) => Some((i as usize, m.key.as_str())),
+                    _ => None,
+                })
+                .collect();
+            if live.is_empty() {
+                continue;
+            }
+            live.sort_by_key(|l| l.0);
+            for &(i, key) in &live {
+                let id = &def.settings.get_index(i).expect("parsed setting").0;
+                if o.settings.contains_key(*id) {
+                    errors.push(diag(format!("map.{key}"), format!("outputs.{}.settings.{id} also sets it; keep one", o.name)));
+                }
+            }
+            let at = |pick: &dyn Fn(usize) -> f64| live.iter().map(|&(i, _)| (i, pick(i))).collect::<Vec<_>>();
+            if let Err(d) = def.settings_json_live(&o.settings, &at(&|i| crate::integration::longest_setting_input(&def.settings[i]))) {
+                errors.extend(d.into_iter().map(|e| diag(format!("outputs.{}.{}", o.name, e.path), e.message)));
+            }
+            o.live_settings = live.iter().map(|l| l.0).collect();
+            if let Ok(json) = def.settings_json_live(&o.settings, &at(&|_| 0.0)) {
+                o.settings_json = json;
             }
         }
         let toggle_slots = resolver.toggle_slots;

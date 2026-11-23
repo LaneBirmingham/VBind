@@ -574,6 +574,7 @@ pub enum Func {
     Step,
     Between,
     Toggle,
+    Taps,
 }
 
 /// Name, minimum and maximum argument counts, and a one-line description.
@@ -597,6 +598,7 @@ pub const FUNCTIONS: &[(Func, &str, usize, usize, &str)] = &[
     (Func::Step, "step", 2, 2, "step(v, t): 1 when v >= t, else 0"),
     (Func::Between, "between", 3, 3, "between(v, lo, hi): 1 when lo <= v <= hi"),
     (Func::Toggle, "toggle", 1, 1, "toggle(x): flips between 0 and 1 each time x becomes true"),
+    (Func::Taps, "taps", 1, 3, "taps(x, n=2, ms=60): each time x becomes true, n quick taps (ms on, ms off), for keys a game wants double-tapped"),
 ];
 
 fn lookup_func(name: &str) -> Option<(Func, usize, usize)> {
@@ -648,6 +650,8 @@ pub enum Node {
     Call(Func, Vec<Node>),
     /// Stateful toggle with its state slot.
     Toggle(usize, Box<Node>),
+    /// Timed taps with their state slot: input, tap count, tap length in ms.
+    Taps(usize, Box<Node>, Box<Node>, Box<Node>),
 }
 
 /// Names an expression may refer to.
@@ -701,6 +705,14 @@ impl<'a, S: Scope> Resolver<'a, S> {
                     let slot = self.toggle_slots;
                     self.toggle_slots += 1;
                     Node::Toggle(slot, Box::new(resolved.remove(0)))
+                } else if func == Func::Taps {
+                    let slot = self.toggle_slots;
+                    self.toggle_slots += 1;
+                    let mut it = resolved.into_iter();
+                    let x = it.next().expect("one argument at least");
+                    let n = it.next().unwrap_or(Node::Const(2.0));
+                    let ms = it.next().unwrap_or(Node::Const(60.0));
+                    Node::Taps(slot, Box::new(x), Box::new(n), Box::new(ms))
                 } else {
                     Node::Call(func, resolved)
                 }
@@ -754,6 +766,11 @@ impl Node {
                 }
             }
             Node::Neg(a) | Node::Not(a) | Node::Toggle(_, a) => a.collect_refs(inputs, vars),
+            Node::Taps(_, a, b, c) => {
+                a.collect_refs(inputs, vars);
+                b.collect_refs(inputs, vars);
+                c.collect_refs(inputs, vars);
+            }
             Node::Bin(_, a, b) => {
                 a.collect_refs(inputs, vars);
                 b.collect_refs(inputs, vars);
@@ -771,13 +788,18 @@ impl Node {
 /// Per-profile mutable evaluation state.
 #[derive(Clone, Debug, Default)]
 pub struct EvalState {
-    /// (previous input was true, current toggle output)
+    /// Per stateful-function slot: (previous input was true, current toggle output)
     pub toggles: Vec<(bool, bool)>,
+    /// Per slot: when `taps` last started, in seconds on the `now_s` clock.
+    pub started: Vec<Option<f64>>,
+    /// The current time in seconds, set by whoever runs the profile; timed
+    /// functions measure from it.
+    pub now_s: f64,
 }
 
 impl EvalState {
     pub fn new(toggle_slots: usize) -> Self {
-        Self { toggles: vec![(false, false); toggle_slots] }
+        Self { toggles: vec![(false, false); toggle_slots], started: vec![None; toggle_slots], now_s: 0.0 }
     }
 }
 
@@ -845,6 +867,20 @@ pub fn eval(node: &Node, env: &Env, st: &mut EvalState) -> f64 {
             entry.0 = now;
             bool_f(entry.1)
         }
+        Node::Taps(slot, a, n, ms) => {
+            let pressed = truthy(eval(a, env, st));
+            let n = eval(n, env, st).round().clamp(1.0, 10.0);
+            let len = eval(ms, env, st).clamp(10.0, 1000.0) / 1000.0;
+            if pressed && !st.toggles[*slot].0 {
+                st.started[*slot] = Some(st.now_s);
+            }
+            st.toggles[*slot].0 = pressed;
+            let Some(start) = st.started[*slot] else { return 0.0 };
+            let t = st.now_s - start;
+            // on for `len`, off for `len`, n times
+            let k = (t / len).floor();
+            bool_f(t >= 0.0 && k < n * 2.0 && (k as i64) % 2 == 0)
+        }
         Node::Call(f, args) => {
             let mut a = [0.0f64; 16];
             let n = args.len().min(16);
@@ -903,7 +939,7 @@ fn call(f: Func, a: &[f64]) -> f64 {
         }
         Func::Step => bool_f(a[0] >= a[1]),
         Func::Between => bool_f(a[0] >= a[1] && a[0] <= a[2]),
-        Func::If | Func::Toggle => unreachable!("handled in eval"),
+        Func::If | Func::Toggle | Func::Taps => unreachable!("handled in eval"),
     }
 }
 
@@ -1000,6 +1036,29 @@ mod tests {
         assert_eq!(step(true, &mut st), 1.0);
         assert_eq!(step(false, &mut st), 1.0);
         assert_eq!(step(true, &mut st), 0.0);
+    }
+
+    #[test]
+    fn taps_play_out_after_a_press() {
+        let node = compile("taps(left.b1, 2, 50)").unwrap();
+        let mut st = EvalState::new(1);
+        let mut s = DeviceState::default();
+        let mut at = |ms: f64, pressed: bool, st: &mut EvalState| {
+            s.buttons[0] = pressed;
+            st.now_s = ms / 1000.0;
+            let devices = [Some(&s), None];
+            eval(&node, &Env { devices: &devices, vars: &[] }, st)
+        };
+        assert_eq!(at(0.0, false, &mut st), 0.0);
+        // pressed at 100 ms and released quickly: on, off, on, then done
+        let seen: Vec<f64> = [(100.0, true), (120.0, false), (160.0, false), (210.0, false), (260.0, false), (400.0, false)]
+            .iter()
+            .map(|&(t, p)| at(t, p, &mut st))
+            .collect();
+        assert_eq!(seen, vec![1.0, 1.0, 0.0, 1.0, 0.0, 0.0]);
+        // holding the button does not repeat
+        assert_eq!(at(500.0, true, &mut st), 1.0);
+        assert_eq!(at(900.0, true, &mut st), 0.0);
     }
 
     #[test]

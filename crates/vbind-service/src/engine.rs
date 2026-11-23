@@ -13,16 +13,23 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use vbind_core::expr::HatDir;
 use vbind_core::math;
-use vbind_core::integration::{FrameEncoder, Integration, json_channel_bytes};
+use vbind_core::integration::{FrameEncoder, Integration, json_channel_bytes, setting_from_number};
 use vbind_core::output::{OutputKind, Report};
 use vbind_core::profile::{CompiledOutput, CompiledProfile, Runtime};
 use vbind_core::state::{DeviceInfo, DeviceState, Guid};
 use vbind_io::dinput::{DirectInput, Scanner};
+use vbind_io::sendinput::KeyboardMouse;
 use vbind_io::shm::SharedMemory;
 use vbind_io::vigem::{Vigem, XboxPad};
 use vbind_io::vjoy::{Vjoy, VjoyDeviceInfo, VjoyStick};
 
 const IDLE_HZ: u32 = 250;
+
+/// Seconds since the engine first asked, the clock timed expressions use.
+fn clock_s() -> f64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
 const PUBLISH_EVERY: Duration = Duration::from_millis(16);
 const SCAN_EVERY: Duration = Duration::from_secs(1);
 const XBOX360_VID_PID: (u16, u16) = (0x045E, 0x028E);
@@ -177,6 +184,8 @@ enum OutputDev {
     Xbox { pad: XboxPad, slot: Option<u32> },
     Vjoy(VjoyStick),
     Integration(IntegrationOut),
+    /// Releases held keys and buttons when dropped.
+    Keyboard(KeyboardMouse),
 }
 
 /// Drives a game integration's shared-memory frame.
@@ -187,6 +196,9 @@ struct IntegrationOut {
     settings: Option<SharedMemory>,
     encoder: FrameEncoder,
     epoch: Instant,
+    /// Values last sent for the settings the profile maps, so the settings
+    /// channel is only rewritten when one of them changes.
+    live_sent: Vec<serde_json::Value>,
 }
 
 impl IntegrationOut {
@@ -194,12 +206,14 @@ impl IntegrationOut {
         let def = o.integration.clone().ok_or("the integration is not installed")?;
         let mut frame = SharedMemory::create(&def.frame.shared_memory, def.frame.size)?;
         frame.clear();
-        let mut out = IntegrationOut { encoder: FrameEncoder::new(&def), def, frame, settings: None, epoch: Instant::now() };
+        let mut out =
+            IntegrationOut { encoder: FrameEncoder::new(&def), def, frame, settings: None, epoch: Instant::now(), live_sent: Vec::new() };
         out.write_settings(o.settings_json.as_deref())?;
         Ok(out)
     }
 
     fn write_settings(&mut self, json: Option<&str>) -> Result<(), String> {
+        self.live_sent.clear();
         match (&self.def.channels.settings, json) {
             (Some(ch), Some(text)) => {
                 let mut m = match self.settings.take() {
@@ -214,10 +228,24 @@ impl IntegrationOut {
         Ok(())
     }
 
-    fn update(&mut self, values: &[f64]) {
+    fn update(&mut self, o: &CompiledOutput, controls: &[f64], settings: &[f64]) -> Result<(), String> {
         let now = self.epoch.elapsed().as_millis() as u64;
-        let bytes = self.encoder.encode(&self.def, values, now);
+        let bytes = self.encoder.encode(&self.def, controls, now);
         self.frame.write(bytes);
+        if o.live_settings.is_empty() {
+            return Ok(());
+        }
+        let live: Vec<serde_json::Value> = o
+            .live_settings
+            .iter()
+            .map(|&i| setting_from_number(&self.def.settings[i], settings.get(i).copied().unwrap_or(0.0)))
+            .collect();
+        if live != self.live_sent {
+            let json = o.live_settings_json(settings)?;
+            self.write_settings(json.as_deref())?;
+            self.live_sent = live;
+        }
+        Ok(())
     }
 }
 
@@ -455,6 +483,7 @@ impl Engine {
                     None => Err(self.vjoy_error.clone().unwrap_or_else(|| "vJoy is not installed".into())),
                 },
                 OutputKind::Integration => IntegrationOut::open(o).map(OutputDev::Integration),
+                OutputKind::Keyboard => Ok(OutputDev::Keyboard(KeyboardMouse::new())),
             };
             match made {
                 Ok(dev) => fresh.push(OutputSlot { kind: o.kind, vjoy_id: o.vjoy_id, integration, dev, error: None }),
@@ -619,15 +648,14 @@ impl Engine {
 
         if let Some(a) = self.active.as_mut() {
             let devs: Vec<Option<&DeviceState>> = a.roles.iter().map(|r| r.and_then(|g| self.states.get(&g))).collect();
+            a.runtime.eval.now_s = clock_s();
             a.compiled.evaluate(&devs, &mut a.runtime);
-            for (slot, report) in self.outputs.iter_mut().zip(&a.runtime.reports) {
+            for ((slot, report), out) in self.outputs.iter_mut().zip(&a.runtime.reports).zip(&a.compiled.outputs) {
                 let r = match (&mut slot.dev, report) {
                     (OutputDev::Xbox { pad, .. }, Report::Xbox(x)) => pad.update(x),
                     (OutputDev::Vjoy(v), Report::Vjoy(j)) => v.update(j),
-                    (OutputDev::Integration(i), Report::Integration(values)) => {
-                        i.update(values);
-                        Ok(())
-                    }
+                    (OutputDev::Integration(i), Report::Integration { controls, settings }) => i.update(out, controls, settings),
+                    (OutputDev::Keyboard(k), Report::Keyboard(r)) => k.update(r, out.mouse_speed(), out.wheel_speed()),
                     _ => Ok(()),
                 };
                 slot.error = r.err();
