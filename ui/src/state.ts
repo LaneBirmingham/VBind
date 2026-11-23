@@ -5,8 +5,10 @@ import {
   api,
   events,
   type Device,
+  type Drawing,
   type Graph,
   type GraphRef,
+  type IntegrationSummary,
   type GraphResponse,
   type Layout,
   type LiveState,
@@ -22,7 +24,11 @@ export const status = signal<Status | null>(null);
 export const devices = signal<Device[]>([]);
 export const profiles = signal<ProfileSummary[]>([]);
 export const layouts = signal<Layout[]>([]);
+/** Resolved pictures by layout id, for layouts that have views. */
+export const drawings = signal<Record<string, Drawing>>({});
 export const live = signal<LiveState | null>(null);
+/** Installed game integrations with their add-on status. */
+export const integrations = signal<IntegrationSummary[]>([]);
 export const panel = signal<PanelState>({ cards: [], highlights: [], rev: 0 });
 export const connected = signal(true);
 /** Profile shown on the mapping board: the user's pick, else the active one. */
@@ -72,6 +78,19 @@ export async function refreshProfiles() {
 }
 export async function refreshLayouts() {
   layouts.value = await api.get<Layout[]>("/layouts").catch(() => layouts.value);
+  const next: Record<string, Drawing> = {};
+  await Promise.all(
+    layouts.value
+      .filter((l) => l.views?.length)
+      .map(async (l) => {
+        const d = await api.get<Drawing>(`/layouts/${encodeURIComponent(l.id)}/drawing`).catch(() => drawings.value[l.id]);
+        if (d) next[l.id] = d;
+      }),
+  );
+  drawings.value = next;
+}
+export async function refreshIntegrations() {
+  integrations.value = await api.get<IntegrationSummary[]>("/integrations").catch(() => integrations.value);
 }
 export async function refreshPanel() {
   const p = await api.get<PanelState>("/panel").catch(() => null);
@@ -102,7 +121,7 @@ export async function refreshGraph() {
 let lastBoard: string | null = null;
 export function start() {
   const all = async () => {
-    await Promise.all([refreshStatus(), refreshDevices(), refreshProfiles(), refreshLayouts(), refreshPanel()]);
+    await Promise.all([refreshStatus(), refreshDevices(), refreshProfiles(), refreshLayouts(), refreshPanel(), refreshIntegrations()]);
     await refreshGraph();
   };
   all();
@@ -138,6 +157,11 @@ export function start() {
         case "panel":
           refreshPanel();
           break;
+        case "integrations":
+          refreshIntegrations();
+          refreshProfiles();
+          refreshGraph();
+          break;
         case "reconnect":
           connected.value = false;
           setTimeout(all, 800);
@@ -146,6 +170,10 @@ export function start() {
     },
   );
   setInterval(refreshStatus, 4000);
+  // The add-on's status lives in the game, so ask now and then.
+  setInterval(() => {
+    if (integrations.value.length && !document.hidden) refreshIntegrations();
+  }, 2500);
 }
 
 // ---------------------------------------------------------------- helpers

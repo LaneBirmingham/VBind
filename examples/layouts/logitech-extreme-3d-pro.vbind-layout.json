@@ -5,22 +5,61 @@
   "match": [{ "vid": "046D", "pid": "C215" }],
   "shape": "stick",
   "controls": {
-    "x": { "label": "Stick left/right", "group": "grip", "pos": [66, 34] },
-    "y": { "label": "Stick forward/back", "group": "grip", "pos": [36, 52] },
-    "rz": { "label": "Twist", "group": "grip", "pos": [64, 48] },
-    "slider1": { "label": "Throttle lever", "group": "base", "pos": [22, 88] },
-    "hat1": { "label": "Hat switch", "group": "head", "pos": [54, 5] },
-    "b1": { "label": "Trigger", "group": "grip", "pos": [36, 29] },
-    "b2": { "label": "Thumb button", "group": "grip", "pos": [37, 40] },
-    "b3": { "label": "Head button 3 (lower left)", "group": "head", "pos": [41, 18] },
-    "b4": { "label": "Head button 4 (lower right)", "group": "head", "pos": [64, 22] },
-    "b5": { "label": "Head button 5 (upper left)", "group": "head", "pos": [43, 9] },
-    "b6": { "label": "Head button 6 (upper right)", "group": "head", "pos": [65, 13] },
-    "b7": { "label": "Base button 7", "group": "base" },
-    "b8": { "label": "Base button 8", "group": "base" },
-    "b9": { "label": "Base button 9", "group": "base" },
-    "b10": { "label": "Base button 10", "group": "base" },
-    "b11": { "label": "Base button 11", "group": "base" },
-    "b12": { "label": "Base button 12", "group": "base" }
-  }
+    "x": { "label": "Stick left/right", "group": "grip", "pos": [66, 34], "view": "side", "at": [76, 224] },
+    "y": { "label": "Stick forward/back", "group": "grip", "pos": [36, 52], "view": "side", "at": [76, 200] },
+    "rz": { "label": "Twist", "group": "grip", "pos": [64, 48], "view": "side", "at": [76, 176] },
+    "slider1": { "label": "Throttle lever", "group": "base", "pos": [22, 88], "view": "side", "at": [16, 247] },
+    "hat1": { "label": "Hat switch", "group": "head", "pos": [54, 5], "view": "side", "at": [74, 42] },
+    "b1": { "label": "Trigger", "group": "grip", "pos": [36, 29], "view": "side", "at": [34, 128] },
+    "b2": { "label": "Thumb button", "group": "grip", "pos": [37, 40], "view": "side", "at": [49.5, 160] },
+    "b3": { "label": "Head button 3 (lower left)", "group": "head", "pos": [41, 18], "view": "side", "at": [52, 78] },
+    "b4": { "label": "Head button 4 (lower right)", "group": "head", "pos": [64, 22], "view": "side", "at": [100, 80] },
+    "b5": { "label": "Head button 5 (upper left)", "group": "head", "pos": [43, 9], "view": "side", "at": [54, 58] },
+    "b6": { "label": "Head button 6 (upper right)", "group": "head", "pos": [65, 13], "view": "side", "at": [98, 58] },
+    "b7": { "label": "Base button 7", "group": "base", "view": "base", "at": [29, 53] },
+    "b8": { "label": "Base button 8", "group": "base", "view": "base", "at": [51, 53] },
+    "b9": { "label": "Base button 9", "group": "base", "view": "base", "at": [29, 79] },
+    "b10": { "label": "Base button 10", "group": "base", "view": "base", "at": [51, 79] },
+    "b11": { "label": "Base button 11", "group": "base", "view": "base", "at": [29, 105] },
+    "b12": { "label": "Base button 12", "group": "base", "view": "base", "at": [51, 105] }
+  },
+  "views": [
+    {
+      "id": "side",
+      "label": "Stick",
+      "size": [140, 300],
+      "parts": [
+        { "path": "M0 270 Q0 256 14 256 L126 256 Q140 256 140 270 L140 290 Q140 298 132 298 L8 298 Q0 298 0 290 Z", "note": "base" },
+        { "kit": "lever", "box": [10, 232, 12, 30], "note": "throttle lever" },
+        { "kit": "boot", "box": [50, 238, 40, 20] },
+        { "kit": "grip.contoured", "box": [42, 88, 60, 160] },
+        { "kit": "trigger", "box": [30, 108, 18, 40] },
+        { "kit": "button.round", "box": [45, 151, 9, 18], "note": "thumb button 2 on the grip" },
+        { "kit": "head.wide", "box": [33, 24, 83, 72] },
+        { "kit": "hat", "box": [64, 32, 20, 20] },
+        { "kit": "button.round", "box": [49, 53, 10, 10] },
+        { "kit": "button.round", "box": [93, 53, 10, 10] },
+        { "kit": "button.round", "box": [47, 73, 10, 10] },
+        { "kit": "button.round", "box": [95, 75, 10, 10] },
+        { "path": "M72 120 C80 150 80 200 74 236", "style": "line", "note": "grip seam" }
+      ]
+    },
+    {
+      "id": "base",
+      "label": "Base, from above",
+      "size": [200, 140],
+      "parts": [
+        { "kit": "base.rounded", "box": [4, 6, 192, 128] },
+        { "kit": "shape.ellipse", "box": [100, 40, 64, 64], "style": "detail", "note": "stick column" },
+        { "kit": "shape.rounded", "box": [26, 14, 52, 16], "style": "hole", "note": "throttle slot" },
+        { "kit": "lever", "box": [40, 10, 16, 24], "note": "throttle lever" },
+        { "kit": "button.round", "box": [22, 46, 14, 14] },
+        { "kit": "button.round", "box": [44, 46, 14, 14] },
+        { "kit": "button.round", "box": [22, 72, 14, 14] },
+        { "kit": "button.round", "box": [44, 72, 14, 14] },
+        { "kit": "button.round", "box": [22, 98, 14, 14] },
+        { "kit": "button.round", "box": [44, 98, 14, 14] }
+      ]
+    }
+  ]
 }

@@ -84,11 +84,65 @@ fn tools() -> Vec<Tool> {
             description: "Pick which connected device fills a role on this PC (needed when two identical devices match). Pass device null to clear.",
             schema: || obj(json!({ "profile": { "type": "string" }, "role": { "type": "string" }, "device": { "type": ["string", "null"], "description": "Device GUID" } }), &["profile", "role", "device"]),
         },
-        Tool { name: "list_layouts", description: "Device layout cards: names and positions for each device model's controls.", schema: none },
+        Tool { name: "list_layouts", description: "Device layout cards: names, control labels, positions and picture views for each device model.", schema: none },
+        Tool { name: "get_layout", description: "One device layout card, including its views and where each control is placed.", schema: || obj(json!({ "id": { "type": "string" } }), &["id"]) },
         Tool {
             name: "save_layout",
-            description: "Create or replace a device layout card so the window labels and draws a device's controls (see get_schema kind=layout).",
+            description: "Create or replace a whole device layout card so the window labels and draws a device's controls (see get_schema kind=layout). To draw the device, prefer set_layout_view and place_controls.",
             schema: || obj(json!({ "layout": { "type": "object" } }), &["layout"]),
+        },
+        Tool {
+            name: "layout_kit",
+            description: "The kit of generic parts device pictures are drawn from (grips, heads, bases, hats, buttons, wheels, levers...). Each part is stretched to fill the box you give it.",
+            schema: none,
+        },
+        Tool {
+            name: "set_layout_view",
+            description: "Create or replace one picture (view) of a device in its layout card. A view has a size in view units and parts drawn in order: {kit, box: [x, y, w, h], rotate?, flip?, style?} or {path: SVG path data in view units, style?}. Styles: body, detail, hole, line. Then place controls with place_controls and check the result with render_layout.",
+            schema: || obj(json!({
+                "layout": { "type": "string", "description": "Layout id." },
+                "view": { "type": "object", "description": "{id, label, size: [w, h], parts: [...]}. See get_schema kind=layout, definition View." }
+            }), &["layout", "view"]),
+        },
+        Tool { name: "delete_layout_view", description: "Remove a view, its photo, and the placements of controls on it.", schema: || obj(json!({ "layout": { "type": "string" }, "view": { "type": "string" } }), &["layout", "view"]) },
+        Tool {
+            name: "place_controls",
+            description: "Put controls on a view at [x, y] in view units (the centre of the button or hat). Use capture_input to be sure which control id is which before placing it. A control not yet in the layout needs a label. null takes a control off the picture.",
+            schema: || obj(json!({
+                "layout": { "type": "string" },
+                "view": { "type": "string", "description": "View for controls that do not name their own." },
+                "controls": { "type": "object", "additionalProperties": { "oneOf": [
+                    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                    { "type": "object", "properties": { "at": { "type": "array", "items": { "type": "number" } }, "view": { "type": "string" }, "label": { "type": "string" }, "size": { "type": "number", "description": "Marker radius in view units." } } },
+                    { "type": "null" }
+                ] }, "description": "{\"b1\": [34, 130], \"hat1\": {\"at\": [74, 42], \"label\": \"Thumb hat\"}}" }
+            }), &["layout", "controls"]),
+        },
+        Tool {
+            name: "render_layout",
+            description: "Look at a view as an image: the drawing on a grid in view units, every placed control as a numbered marker, and a legend. With photo=true the drawing is outlined over the person's photo so you can line the two up. Use it after every change to check your work.",
+            schema: || obj(json!({
+                "layout": { "type": "string" },
+                "view": { "type": "string", "description": "Default: the first view." },
+                "photo": { "type": "boolean" },
+                "highlight": { "type": "array", "items": { "type": "string" }, "description": "Control ids to fill in." },
+                "size": { "type": "number", "description": "Drawing size in pixels, default 760." }
+            }), &["layout"]),
+        },
+        Tool {
+            name: "set_layout_photo",
+            description: "Attach a photo of the person's device (a PNG, JPEG or WebP file on this PC) to a view, or with only fit, move it. fit is [x, y, width, height] in view units; line it up so the controls' markers sit on the real buttons (check with render_layout photo=true). Photos stay on this PC and are never exported with the layout.",
+            schema: || obj(json!({
+                "layout": { "type": "string" },
+                "view": { "type": "string" },
+                "path": { "type": "string", "description": "Image file path." },
+                "fit": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 }
+            }), &["layout", "view"]),
+        },
+        Tool {
+            name: "set_hints",
+            description: "Pin memory hints to mappings in a profile, shown beside the control in the picture view and in the trainer, for example {\"pad.a\": \"Index finger, like a gas pedal\"}. null clears one. Keep them short and physical.",
+            schema: || obj(json!({ "profile": { "type": "string" }, "hints": { "type": "object", "additionalProperties": { "type": ["string", "null"] } } }), &["profile", "hints"]),
         },
         Tool {
             name: "post_panel",
@@ -113,7 +167,42 @@ fn tools() -> Vec<Tool> {
             description: "Convert a Galactic Racer HOSAS Bridge hosas_config.json (default location if no path) into a VBind profile, with the same device assignments. save=false only returns the converted profile.",
             schema: || obj(json!({ "path": { "type": "string" }, "id": { "type": "string" }, "name": { "type": "string" }, "save": { "type": "boolean" }, "replace": { "type": "boolean" }, "activate": { "type": "boolean" } }), &[]),
         },
-        Tool { name: "get_schema", description: "JSON schema for a profile, layout or panel post.", schema: || obj(json!({ "kind": { "enum": ["profile", "layout", "panel"] } }), &["kind"]) },
+        Tool {
+            name: "list_integrations",
+            description: "Installed game integrations: optional per-game add-ons that let a profile drive a game directly (true analog input) through a game-side plugin. Shows whether the game was found, whether the add-on files are installed and current, the add-on's live status (active, not running, error) and telemetry.",
+            schema: none,
+        },
+        Tool {
+            name: "get_integration",
+            description: "One integration in full: its definition (controls, settings, install steps), install state, live add-on status and telemetry readouts.",
+            schema: || obj(json!({ "id": { "type": "string" } }), &["id"]),
+        },
+        Tool {
+            name: "import_integration",
+            description: "Add (or with replace, update) an integration from a folder on this PC holding integration.json (see get_schema kind=integration) and a files folder with the game-side add-on files. Validates the frame layout and that every file is there.",
+            schema: || obj(json!({ "path": { "type": "string" }, "replace": { "type": "boolean" } }), &["path"]),
+        },
+        Tool {
+            name: "save_integration",
+            description: "Replace an imported integration's definition (for example to fix a control or a tested build), keeping its files. The active profile restarts if it uses it.",
+            schema: || obj(json!({ "integration": { "type": "object" } }), &["integration"]),
+        },
+        Tool {
+            name: "install_integration",
+            description: "Copy the integration's add-on files into the game's folder as its install steps say, keeping any file it replaces. This changes game files: ask the person first. Close the game before installing.",
+            schema: || obj(json!({ "id": { "type": "string" } }), &["id"]),
+        },
+        Tool {
+            name: "uninstall_integration",
+            description: "Remove the add-on files VBind put in the game folder and put back anything they replaced.",
+            schema: || obj(json!({ "id": { "type": "string" } }), &["id"]),
+        },
+        Tool {
+            name: "launch_game",
+            description: "Start the integration's game through Steam with the add-on loaded (its launch arguments).",
+            schema: || obj(json!({ "id": { "type": "string", "description": "Integration id." } }), &["id"]),
+        },
+        Tool { name: "get_schema", description: "JSON schema for a profile, layout, integration or panel post.", schema: || obj(json!({ "kind": { "enum": ["profile", "layout", "integration", "panel"] } }), &["kind"]) },
     ]
 }
 
@@ -163,17 +252,81 @@ fn call_tool(c: &Client, name: &str, a: &Value) -> Result<Value, ApiError> {
         }
         "list_layouts" => c.get("/layouts"),
         "save_layout" => c.post("/layouts", a.get("layout").unwrap_or(&Value::Null)),
+        "get_layout" => c.get(&format!("/layouts/{}", enc(arg(a, "id")?))),
+        "layout_kit" => c.get("/layout-kit"),
+        "set_layout_view" => {
+            let view = a.get("view").cloned().unwrap_or(Value::Null);
+            let id = view.get("id").and_then(Value::as_str).ok_or_else(|| ApiError { status: 400, body: json!({ "error": "the view needs an id" }) })?.to_string();
+            c.send("PUT", &format!("/layouts/{}/views/{}", enc(arg(a, "layout")?), enc(&id)), Some(&view))
+        }
+        "delete_layout_view" => c.send("DELETE", &format!("/layouts/{}/views/{}", enc(arg(a, "layout")?), enc(arg(a, "view")?)), None),
+        "place_controls" => {
+            let mut body = json!({ "controls": a.get("controls").cloned().unwrap_or(json!({})) });
+            if let Some(v) = a.get("view") {
+                body["view"] = v.clone();
+            }
+            c.post(&format!("/layouts/{}/place", enc(arg(a, "layout")?)), &body)
+        }
+        "set_layout_photo" => {
+            let mut body = json!({});
+            for k in ["path", "fit"] {
+                if let Some(v) = a.get(k) {
+                    body[k] = v.clone();
+                }
+            }
+            c.send("PUT", &format!("/layouts/{}/views/{}/photo", enc(arg(a, "layout")?), enc(arg(a, "view")?)), Some(&body))
+        }
+        "set_hints" => c.send("PUT", &format!("/profiles/{}/hints", enc(arg(a, "profile")?)), Some(a.get("hints").unwrap_or(&json!({})))),
         "post_panel" => c.post("/panel", a),
         "clear_panel" => c.send("DELETE", "/panel", None),
         "ask_user" => c.post("/panel/ask", a),
         "import_hosas_bridge" => c.post("/import/hosas-bridge", a),
-        "get_schema" => vbind_service::api::schema_json(arg(a, "kind")?).ok_or_else(|| ApiError { status: 400, body: json!({ "error": "kinds are profile, layout and panel" }) }),
+        "list_integrations" => c.get("/integrations"),
+        "get_integration" => c.get(&format!("/integrations/{}", enc(arg(a, "id")?))),
+        "import_integration" => c.post("/integrations", a),
+        "save_integration" => {
+            let def = a.get("integration").cloned().unwrap_or(Value::Null);
+            let id = def.get("id").and_then(Value::as_str).ok_or_else(|| ApiError { status: 400, body: json!({ "error": "the integration needs an id" }) })?.to_string();
+            c.send("PUT", &format!("/integrations/{}", enc(&id)), Some(&def))
+        }
+        "install_integration" => c.post(&format!("/integrations/{}/install", enc(arg(a, "id")?)), &json!({})),
+        "uninstall_integration" => c.post(&format!("/integrations/{}/uninstall", enc(arg(a, "id")?)), &json!({})),
+        "launch_game" => c.post(&format!("/integrations/{}/launch", enc(arg(a, "id")?)), &json!({})),
+        "get_schema" => vbind_service::api::schema_json(arg(a, "kind")?).ok_or_else(|| ApiError { status: 400, body: json!({ "error": "kinds are profile, layout, integration and panel" }) }),
         other => Err(ApiError { status: 404, body: json!({ "error": format!("unknown tool '{other}'") }) }),
     }
 }
 
 fn text_result(text: String, is_error: bool) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
+}
+
+/// `render_layout`: the picture itself, so the agent can look at it.
+fn render_tool(c: &Client, a: &Value) -> Result<Value, ApiError> {
+    let id = arg(a, "layout")?;
+    let mut q = Vec::new();
+    if let Some(v) = a.get("view").and_then(Value::as_str) {
+        q.push(format!("view={}", enc(v)));
+    }
+    if a.get("photo").and_then(Value::as_bool) == Some(true) {
+        q.push("photo=true".into());
+    }
+    if let Some(n) = a.get("size").and_then(Value::as_f64) {
+        q.push(format!("size={n}"));
+    }
+    if let Some(h) = a.get("highlight").and_then(Value::as_array) {
+        let ids: Vec<&str> = h.iter().filter_map(Value::as_str).collect();
+        q.push(format!("highlight={}", enc(&ids.join(","))));
+    }
+    let png = c.get_bytes(&format!("/layouts/{}/render?{}", enc(id), q.join("&")))?;
+    use base64::Engine as _;
+    Ok(json!({
+        "content": [
+            { "type": "image", "data": base64::engine::general_purpose::STANDARD.encode(&png), "mimeType": "image/png" },
+            { "type": "text", "text": "Grid lines and control positions are in view units. Numbers on the markers match the legend." }
+        ],
+        "isError": false
+    }))
 }
 
 /// Serve MCP on stdin/stdout until stdin closes.
@@ -210,7 +363,7 @@ pub fn serve(start_app: bool) {
                     "protocolVersion": version,
                     "capabilities": { "tools": { "listChanged": false }, "resources": { "listChanged": false } },
                     "serverInfo": { "name": "vbind", "title": "VBind input mapper", "version": vbind_service::api::VERSION },
-                    "instructions": "VBind maps physical game controllers to virtual Xbox 360 pads and vJoy sticks on Windows. Call vbind_guide first. Typical flow: list_devices, post_panel with your plan, capture_input to identify controls, validate_profile, save_profile with activate, simulate_input + get_state to test, then ask the person to try it."
+                    "instructions": "VBind maps physical game controllers to virtual Xbox 360 pads and vJoy sticks on Windows. Call vbind_guide first. Typical flow: list_devices, post_panel with your plan, capture_input to identify controls, validate_profile, save_profile with activate, simulate_input + get_state to test, then ask the person to try it. To help them learn the mapping, draw each device (layout_kit, set_layout_view, place_controls, render_layout) and add set_hints. For games with a game integration (list_integrations), map straight to its controls instead of a virtual pad."
                 }))
             }
             "ping" => Ok(json!({})),
@@ -237,10 +390,11 @@ pub fn serve(start_app: bool) {
                     if client.is_none() {
                         client = client::connect(&agent_name, start_app).ok();
                     }
+                    let run = |c: &Client| if name == "render_layout" { render_tool(c, &args) } else { call_tool(c, name, &args).map(|v| text_result(serde_json::to_string_pretty(&v).unwrap(), false)) };
                     let res = match &client {
-                        Some(c) => call_tool(c, name, &args),
+                        Some(c) => run(c),
                         None => client::connect(&agent_name, start_app).and_then(|c| {
-                            let r = call_tool(&c, name, &args);
+                            let r = run(&c);
                             client = Some(c);
                             r
                         }),
@@ -249,7 +403,7 @@ pub fn serve(start_app: bool) {
                     let res = match res {
                         Err(e) if e.status == 0 || e.status == 401 => match client::connect(&agent_name, start_app) {
                             Ok(c) => {
-                                let r = call_tool(&c, name, &args);
+                                let r = run(&c);
                                 client = Some(c);
                                 r
                             }
@@ -258,7 +412,7 @@ pub fn serve(start_app: bool) {
                         other => other,
                     };
                     Ok(match res {
-                        Ok(v) => text_result(serde_json::to_string_pretty(&v).unwrap(), false),
+                        Ok(v) => v,
                         Err(e) => text_result(format!("{e}\n{}", serde_json::to_string_pretty(&e.body).unwrap()), true),
                     })
                 }

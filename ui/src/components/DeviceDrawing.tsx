@@ -3,7 +3,7 @@
 
 import type { Layout } from "../api";
 
-const SHAPES: Record<string, string[]> = {
+export const SHAPES: Record<string, string[]> = {
   // Flight stick seen from the side: base, column, grip with head.
   stick: [
     "M14 86 Q14 80 20 80 L80 80 Q86 80 86 86 L86 94 Q86 98 82 98 L18 98 Q14 98 14 94 Z",

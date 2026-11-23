@@ -14,13 +14,15 @@
 //! ```
 
 use crate::expr::{self, EvalState, Env, InputRef, Node, Resolver, Scope};
-use crate::output::{OutputControl, OutputKind, Report};
+use crate::integration::Integration;
+use crate::output::{ControlKind, OutputControl, OutputKind, Report};
 use crate::state::{DeviceInfo, DeviceState};
 use indexmap::IndexMap;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Cow;
 use std::fmt;
+use std::sync::Arc;
 
 pub const PROFILE_FORMAT: u32 = 1;
 
@@ -132,6 +134,13 @@ pub struct OutputDef {
     /// vJoy device number (1-16). Defaults to 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vjoy_id: Option<u8>,
+    /// For `integration` outputs: the installed integration's id, for example "space-engineers-2".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration: Option<String>,
+    /// For `integration` outputs: settings sent to the game-side add-on,
+    /// overriding the integration's defaults.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub settings: IndexMap<String, serde_json::Value>,
 }
 
 /// A named intermediate value: an expression string, or an object with a label.
@@ -191,6 +200,10 @@ pub struct Profile {
     /// What each output does in the game, for example `"pad.a": "Boost"`.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub labels: IndexMap<String, String>,
+    /// Memory hints shown next to a mapping in the picture view and the trainer,
+    /// for example `"pad.a": "Index finger, like a gas pedal"`.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub hints: IndexMap<String, String>,
     /// Polling rate while this profile runs (100-1000, default 500).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polling_hz: Option<u32>,
@@ -251,6 +264,84 @@ pub struct CompiledOutput {
     pub kind: OutputKind,
     pub label: Option<String>,
     pub vjoy_id: u8,
+    /// The integration definition, for `integration` outputs.
+    pub integration: Option<Arc<Integration>>,
+    /// Settings JSON for the integration's settings channel.
+    pub settings_json: Option<String>,
+}
+
+impl CompiledOutput {
+    pub fn parse_control(&self, name: &str) -> Result<OutputControl, String> {
+        match &self.integration {
+            Some(i) => i.control_index(name).map(|x| OutputControl::Integration(x as u16)).ok_or_else(|| {
+                let names: Vec<&str> = i.controls.keys().map(String::as_str).collect();
+                let hint = expr::suggest(name, names.iter().copied()).map(|s| format!(" Did you mean '{s}'?")).unwrap_or_default();
+                format!("{} has no control '{name}'.{hint} Controls: {}", i.name, names.join(", "))
+            }),
+            None => OutputControl::parse(self.kind, name),
+        }
+    }
+
+    fn integration_control(&self, c: OutputControl) -> Option<(&String, &crate::integration::IntegrationControl)> {
+        match (c, &self.integration) {
+            (OutputControl::Integration(i), Some(def)) => def.controls.get_index(i as usize),
+            _ => None,
+        }
+    }
+
+    pub fn control_id(&self, c: OutputControl) -> String {
+        self.integration_control(c).map(|(id, _)| id.clone()).unwrap_or_else(|| c.id())
+    }
+
+    pub fn control_label(&self, c: OutputControl) -> String {
+        self.integration_control(c).map(|(_, x)| x.label.clone()).unwrap_or_else(|| c.default_label())
+    }
+
+    pub fn control_kind(&self, c: OutputControl) -> ControlKind {
+        self.integration_control(c).map(|(_, x)| x.kind).unwrap_or_else(|| c.kind())
+    }
+
+    pub fn neutral_report(&self) -> Report {
+        Report::neutral(self.kind, self.integration.as_ref().map_or(0, |i| i.controls.len()))
+    }
+
+    /// Default display name: "Virtual Xbox 360", "Space Engineers 2".
+    pub fn default_label(&self) -> String {
+        match (self.kind, &self.integration) {
+            (OutputKind::Xbox360, _) => "Virtual Xbox 360".into(),
+            (OutputKind::Vjoy, _) => format!("Virtual stick (vJoy {})", self.vjoy_id),
+            (OutputKind::Integration, Some(i)) => i.name.clone(),
+            (OutputKind::Integration, None) => "Game integration".into(),
+        }
+    }
+}
+
+/// Looks up installed integrations by id while compiling a profile.
+pub trait IntegrationLookup {
+    fn integration(&self, id: &str) -> Option<Arc<Integration>>;
+    /// Ids of every installed integration, for suggestions.
+    fn integration_ids(&self) -> Vec<String>;
+}
+
+/// No integrations installed.
+pub struct NoIntegrations;
+
+impl IntegrationLookup for NoIntegrations {
+    fn integration(&self, _: &str) -> Option<Arc<Integration>> {
+        None
+    }
+    fn integration_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+impl IntegrationLookup for Vec<Arc<Integration>> {
+    fn integration(&self, id: &str) -> Option<Arc<Integration>> {
+        self.iter().find(|i| i.id == id).cloned()
+    }
+    fn integration_ids(&self) -> Vec<String> {
+        self.iter().map(|i| i.id.clone()).collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -314,8 +405,13 @@ impl Profile {
         serde_json::to_string_pretty(self).expect("profile serializes")
     }
 
-    /// Check everything and compile, reporting every problem found.
+    /// Check everything and compile with no integrations installed.
     pub fn compile(&self) -> Result<CompiledProfile, Vec<Diagnostic>> {
+        self.compile_with(&NoIntegrations)
+    }
+
+    /// Check everything and compile, reporting every problem found.
+    pub fn compile_with(&self, integrations: &dyn IntegrationLookup) -> Result<CompiledProfile, Vec<Diagnostic>> {
         let mut errors = Vec::new();
         if self.vbind != PROFILE_FORMAT {
             errors.push(diag("vbind", format!("unsupported profile format {}; this VBind reads format {PROFILE_FORMAT}", self.vbind)));
@@ -359,6 +455,8 @@ impl Profile {
             errors.push(diag("outputs", "a profile needs at least one output, for example {\"pad\": {\"type\": \"xbox360\"}}"));
         }
         let mut vjoy_ids = Vec::new();
+        let mut resolved: Vec<(Option<Arc<Integration>>, Option<String>)> = Vec::new();
+        let mut used_integrations: Vec<&str> = Vec::new();
         for (name, out) in &self.outputs {
             let path = format!("outputs.{name}");
             check_name("output", name, &mut errors, path.clone());
@@ -375,12 +473,44 @@ impl Profile {
                     }
                     vjoy_ids.push(id);
                 }
-                OutputKind::Xbox360 => {
+                OutputKind::Xbox360 | OutputKind::Integration => {
                     if out.vjoy_id.is_some() {
                         errors.push(diag(format!("{path}.vjoy_id"), "vjoy_id only applies to vjoy outputs"));
                     }
                 }
             }
+            let mut entry = (None, None);
+            if out.kind == OutputKind::Integration {
+                match out.integration.as_deref() {
+                    None => errors.push(diag(format!("{path}.integration"), "name the integration, for example \"integration\": \"space-engineers-2\"")),
+                    Some(id) => match integrations.integration(id) {
+                        None => {
+                            let ids = integrations.integration_ids();
+                            let hint = expr::suggest(id, ids.iter().map(String::as_str)).map(|s| format!(" Did you mean '{s}'?")).unwrap_or_default();
+                            let have = if ids.is_empty() { "none are installed".to_string() } else { format!("installed: {}", ids.join(", ")) };
+                            errors.push(diag(format!("{path}.integration"), format!("no integration '{id}' is installed.{hint} ({have})")));
+                        }
+                        Some(def) => {
+                            if used_integrations.contains(&id) {
+                                errors.push(diag(format!("{path}.integration"), format!("integration '{id}' is used twice; one output drives it")));
+                            }
+                            used_integrations.push(id);
+                            match def.settings_json(&out.settings) {
+                                Ok(json) => entry = (Some(def), json),
+                                Err(d) => errors.extend(d.into_iter().map(|e| diag(format!("{path}.{}", e.path), e.message))),
+                            }
+                        }
+                    },
+                }
+            } else {
+                if out.integration.is_some() {
+                    errors.push(diag(format!("{path}.integration"), "integration only applies to integration outputs"));
+                }
+                if !out.settings.is_empty() {
+                    errors.push(diag(format!("{path}.settings"), "settings only apply to integration outputs"));
+                }
+            }
+            resolved.push(entry);
         }
         for name in self.vars.keys() {
             let path = format!("vars.{name}");
@@ -433,11 +563,14 @@ impl Profile {
         let outputs: Vec<CompiledOutput> = self
             .outputs
             .iter()
-            .map(|(name, o)| CompiledOutput {
+            .zip(resolved)
+            .map(|((name, o), (integration, settings_json))| CompiledOutput {
                 name: name.clone(),
                 kind: o.kind,
                 label: o.label.clone(),
                 vjoy_id: o.vjoy_id.unwrap_or(1),
+                integration,
+                settings_json,
             })
             .collect();
 
@@ -452,7 +585,10 @@ impl Profile {
                     .unwrap_or_default();
                 return Err(format!("no output named '{out}'.{hint}"));
             };
-            OutputControl::parse(outputs[idx].kind, control).map(|c| (idx, c))
+            if outputs[idx].kind == OutputKind::Integration && outputs[idx].integration.is_none() {
+                return Err(format!("output '{out}' has no integration installed yet"));
+            }
+            outputs[idx].parse_control(control).map(|c| (idx, c))
         };
 
         let mut mappings: Vec<Mapping> = Vec::new();
@@ -491,6 +627,13 @@ impl Profile {
                 errors.push(diag(format!("labels.{key}"), m));
             }
         }
+        for (key, hint) in &self.hints {
+            if let Err(m) = parse_key(key) {
+                errors.push(diag(format!("hints.{key}"), m));
+            } else if hint.chars().count() > 160 {
+                errors.push(diag(format!("hints.{key}"), "keep hints under 160 characters"));
+            }
+        }
         let toggle_slots = resolver.toggle_slots;
 
         // Variables must not depend on themselves, directly or indirectly.
@@ -525,6 +668,11 @@ impl Profile {
     /// Label for an output key: the game action if given.
     pub fn label_for(&self, key: &str) -> Option<&str> {
         self.labels.get(key).map(String::as_str)
+    }
+
+    /// Memory hint for an output key.
+    pub fn hint_for(&self, key: &str) -> Option<&str> {
+        self.hints.get(key).map(String::as_str)
     }
 }
 
@@ -580,7 +728,7 @@ impl CompiledProfile {
             eval: EvalState::new(self.toggle_slots),
             vars: vec![0.0; self.vars.len()],
             values: vec![0.0; self.mappings.len()],
-            reports: self.outputs.iter().map(|o| Report::neutral(o.kind)).collect(),
+            reports: self.outputs.iter().map(CompiledOutput::neutral_report).collect(),
         }
     }
 
@@ -593,8 +741,8 @@ impl CompiledProfile {
             };
             rt.vars[i] = v;
         }
-        for (r, out) in rt.reports.iter_mut().zip(&self.outputs) {
-            *r = Report::neutral(out.kind);
+        for r in rt.reports.iter_mut() {
+            r.reset();
         }
         for (i, m) in self.mappings.iter().enumerate() {
             let env = Env { devices, vars: &rt.vars };
