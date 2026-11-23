@@ -10,6 +10,23 @@ press controls, writes the mapping, tests it, and shows its progress in the
 VBind window. The window's wiring board shows every mapping live, so you can
 see exactly which physical control drives which virtual one.
 
+The Picture view shows the same mapping on drawings of your own devices: every
+mapped control points at the game button it drives ("A - Boost"), lights up as
+you press it, and can carry a memory hint. A trainer shows a game button the
+way a game does and waits for you to press it on your sticks, so you learn
+which control "Press A" means. VBind ships no device art: your agent draws
+any device from a kit of generic parts and SVG paths, checks its drawing by
+rendering it, and can line it up with your own photo, which stays on your PC.
+
+Game integrations are optional, per-PC add-ons for games without useful
+controller support. Where someone has written a game-side plugin that takes
+input from outside (Kontrol adapters, for example), an integration file
+tells VBind how to reach it through shared memory; profiles then map sticks
+straight to the game's own actions with full analog input. VBind ships no
+integrations and nothing game-specific: your agent writes the file, and
+VBind installs the plugin into the game only when you agree, shows whether
+it is running, and removes it cleanly.
+
 ## Install
 
 Run `VBind_<version>_x64-setup.exe`. It installs per user into
@@ -73,8 +90,9 @@ control, for example:
 
 Share a profile with **Export** on the Profiles tab; whoever imports it picks
 their own devices for each role. `vbind schema profile` prints the full JSON
-schema. Layout cards (`examples/layouts`) name and place a device's controls
-so the window can label and draw them.
+schema. Layout cards (`examples/layouts`) name a device's controls and hold
+the agent's drawings of it, so the window can label and picture them. Share
+them the same way; photos are never included.
 
 `examples/profiles/galactic-racer-dual-hosas.vbind.json` is a complete
 two-stick HOSAS setup for STAR WARS: Galactic Racer, converted from the

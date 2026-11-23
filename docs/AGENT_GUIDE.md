@@ -44,7 +44,9 @@ the Xbox (ViGEmBus) and vJoy drivers are available.
    without unplugging the virtual pad, so the game keeps its controller.
 
 If a device has no layout card yet, write one (see Device layouts) so the
-window labels its controls properly ("Trigger" instead of "Button 1").
+window labels its controls properly ("Trigger" instead of "Button 1"), then
+draw it (see Drawing a device) so the person can see their mapping on a
+picture of their own device and practise it in the trainer.
 
 ## Profiles
 
@@ -83,8 +85,9 @@ window labels its controls properly ("Trigger" instead of "Button 1").
   device GUID in a profile: GUIDs only mean something on one PC. If two
   connected devices match a role (two identical sticks), assign one:
   `vbind assign <profile> <role> <device-guid>` (stored only on this PC).
-- `outputs`: virtual devices by name. `{"type": "xbox360"}` or
-  `{"type": "vjoy", "vjoy_id": 1}`.
+- `outputs`: virtual devices by name. `{"type": "xbox360"}`,
+  `{"type": "vjoy", "vjoy_id": 1}`, or a game integration
+  `{"type": "integration", "integration": "<id>"}` (see Game integrations).
 - `vars`: named intermediate values. Use them for anything that combines
   inputs; the window draws each variable as a box between inputs and outputs.
 - `map`: output control to expression. One expression per output control.
@@ -153,6 +156,10 @@ into one device for games that only accept one. It needs the vJoy driver
 (https://github.com/BrunnerInnovation/vJoy/releases) with the device
 configured to have the axes and buttons you map.
 
+**integration** (`"type": "integration", "integration": "<id>"`): the
+controls the integration defines (`vbind integration show <id>`), with
+their own kinds. Optional `settings` override the integration's defaults.
+
 ## Common patterns
 
 - Invert an axis: `-left.y`.
@@ -194,7 +201,147 @@ drawing. It is shared like a profile.
 `pos` is `[x, y]` from 0 to 100 on that drawing. Keys are axis names,
 `b1..b128` and `hat1..hat4`. Save with `vbind layout import file.json`.
 Learn a new device by capturing each control in turn and asking the person
-what it is called.
+what it is called. A card can also carry real pictures of the device in
+`views`, with each control placed by `view` and `at`; see the next section.
+
+## Drawing a device
+
+The Mapping tab has a Picture view: each device drawn as itself, with every
+mapped control pointing at the game button it drives, plus a trainer that
+shows a game button and waits for the person to press it. It exists to help
+people learn which control a game's "Press A" means. VBind ships no device
+art, so you draw each device into its layout card. Any device works: sticks,
+throttles, button boxes, pedals, wheels.
+
+1. Work out what the device looks like: its name and USB ID from
+   `vbind devices`, product photos or the manual if you can browse, and the
+   person's description. Pick one to three views, for example the stick from
+   the side and the base from above.
+2. Confirm which control is which before placing anything. Button numbers
+   are not printed on most devices:
+   `vbind capture --prompt "Press the button at the top left of the head"`.
+3. Draw each view with `set_layout_view` (`vbind layout view <layout> view.json`).
+   A view has a `size` in view units (any scale, for example 140 x 300 for a
+   stick) and `parts`, drawn in order so later parts sit on top:
+   - `{"kit": "grip.contoured", "box": [x, y, w, h]}` places a kit part,
+     stretched to fill the box. `rotate` (degrees) and `flip` (mirror) are
+     optional. `vbind layout kit` (`layout_kit`) lists the parts: grips,
+     heads, bases, boots, triggers, hats, buttons, thumbsticks, wheels,
+     sliders, toggles, levers, throttle handles, pedals, a gamepad body, a
+     steering wheel rim and plain shapes.
+   - `{"path": "M40 92 C34 62 46 30 74 26 ..."}` is SVG path data in view
+     units, for shapes the kit has no part for.
+   - `style` is `body` (the device), `detail` (raised caps), `hole`
+     (recesses) or `line` (seams and outlines).
+4. Place controls with `place_controls`
+   (`vbind layout place <layout> --view side b1=34,130 hat1=74,42`), at the
+   centre of each button or hat. Axes can be placed too, for example `y` on
+   the middle of the grip, so thrust and steering get a callout.
+5. Look at your work with `render_layout`
+   (`vbind layout render <layout> --view side -o side.png`): the drawing on a
+   grid in view units, each placed control as a numbered marker, and a legend
+   that lists anything not placed yet. Fix and render again until it looks
+   like the device and every mapped control sits on its button.
+
+```json
+{
+  "id": "side",
+  "label": "Stick",
+  "size": [140, 300],
+  "parts": [
+    { "kit": "base.rounded", "box": [0, 256, 140, 42] },
+    { "kit": "boot", "box": [50, 238, 40, 20] },
+    { "kit": "grip.contoured", "box": [42, 88, 60, 160] },
+    { "kit": "trigger", "box": [30, 108, 18, 40] },
+    { "kit": "head.wide", "box": [33, 24, 83, 72] },
+    { "kit": "hat", "box": [64, 32, 20, 20] }
+  ]
+}
+```
+
+Photos: the person can add a photo of their own device to a view in the
+window, or you can attach one they point you to with `set_layout_photo`
+(`vbind layout photo <layout> <view> photo.jpg`). Line it up by setting `fit`,
+`[x, y, width, height]` in view units, and check with `render_layout`
+`photo=true`, which outlines your drawing over the photo. Photos stay on this
+PC and are never part of a shared layout, so never put product photos in a
+layout.
+
+Memory hints: `set_hints` (`vbind profile hint <profile> pad.a "Index finger,
+like a gas pedal"`) pins a short, physical reminder to a mapping. It shows in
+the callout and in the trainer.
+
+
+## Game integrations
+
+Some games take no controller input worth using: no gamepad support, or
+only digital keys. If someone has written a game-side add-on (a plugin or
+mod that runs inside the game and accepts input from outside), VBind can
+drive it directly through a game integration, with true analog input. An
+integration is optional and per PC. VBind ships none and has nothing
+game-specific built in: it is a data file plus the add-on's files, kept in
+`%APPDATA%\VBind\integrations\<id>\`.
+
+Check `vbind integration list` (`list_integrations`) first. To add one:
+
+1. Find the add-on and read how it receives input. VBind speaks one
+   transport today: a fixed-layout frame in named shared memory, which the
+   add-on reads every game frame. Kontrol adapters
+   (https://github.com/komandio-labs/kontrol-adapters) work this way, so any
+   game they cover can be added.
+2. Write `integration.json` (`vbind schema integration`):
+   - `frame`: the shared memory name, its size in bytes, and `constants`
+     (version numbers, an "input enabled" flag) written while a profile runs.
+     Every byte goes back to zero when the profile stops or VBind exits, and
+     VBind zeroes it at start-up in case it crashed.
+   - `controls`: one per game action, by id: `label`, `kind` (`axis` -1..1,
+     `trigger` 0..1, `button`), the byte offset `at`, the little-endian
+     `type` (`u8`..`u64`, `i8`..`i64`, `f32`, `f64`), `bit` for buttons
+     packed into an integer, `range` for integer axes, and `pulse_ms` for
+     actions the add-on only notices on a rising edge (VBind keeps the bit
+     set that long so a quick tap is not missed). `group` and `description`
+     help the person.
+   - `channels`: optional JSON documents in shared memory: `status` (with
+     the JSON pointers to its state and timestamp, and the states that mean
+     "working"), `telemetry` (shown through `readouts`), and `settings`
+     (VBind writes the profile's settings there).
+   - `settings`: what the add-on accepts, each with a `default` and
+     `choices` or `min`/`max`.
+   - `game`: `name`, `steam_app_id`, and `tested_builds` (Steam build ids
+     the add-on is known to work with).
+   - `install`: steps that put the add-on in place, all inside
+     `{game_dir}` (the game's Steam folder): `{"action": "copy", "file":
+     "Addon.dll", "to": "{game_dir}\\Bin"}` and `{"action": "write_text",
+     "path": ..., "text": ...}`. Any file a step replaces is kept and put back
+     on uninstall.
+   - `launch`: extra launch arguments; the game starts through Steam.
+   - `source`: where the add-on came from, its version and license.
+3. Put it in a folder with the add-on files under `files\`, then
+   `vbind integration import <folder>` (`import_integration`). VBind checks
+   that no two controls share a byte or bit, that everything fits the frame,
+   and that every file is there.
+4. Ask the person before `vbind integration install <id>`
+   (`install_integration`): it changes files in the game folder. The game
+   must be closed. After a game update, `list_integrations` shows whether the
+   files are still current and whether the build was tested.
+5. Map to it from a profile:
+
+```json
+"outputs": {
+  "game": { "type": "integration", "integration": "space-engineers-2",
+            "settings": { "flightModelMode": "DirectAngularFlight" } }
+},
+"map": { "game.pitch": "deadzone(left.y, 0.05)", "game.dampeners": "right.b2" }
+```
+
+6. `vbind integration launch <id>` (`launch_game`) starts the game with the
+   add-on loaded. `get_integration` shows the add-on's live status (active,
+   not running, or its error) and telemetry, so you can confirm input
+   arrives without asking the person to describe what they see.
+
+Respect the add-on's license and the game's rules. Add-ons that hook a game
+can break after game updates, and may not be allowed in every multiplayer
+setting; say so when you suggest one.
 
 ## The panel
 
@@ -219,6 +366,10 @@ a step list in place (`vbind panel post --json card.json --append`).
 - `vbind state` shows live inputs, every variable and every output value.
 - `vbind xinput` shows what games receive from virtual Xbox pads.
 - `vbind profile graph <id>` shows the wiring the window draws.
+- `vbind layout render <layout> --view <view>` shows a device picture as the
+  window will draw it, with every placed control numbered.
+- `vbind integration show <id>` shows whether a game integration's add-on is
+  running in the game, its telemetry, and (in `vbind state`) the values sent.
 - Drivers: if `xbox360` is unavailable, ViGEmBus is missing
   (https://github.com/nefarius/ViGEmBus/releases). If `vjoy` is unavailable,
   install and configure vJoy.

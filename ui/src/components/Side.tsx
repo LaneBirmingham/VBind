@@ -10,6 +10,7 @@ import {
   drawerOpen,
   errorText,
   graph,
+  integrations,
   live,
   notify,
   outputInputs,
@@ -171,14 +172,16 @@ function ExprField({ profile, value, onInput, digital }: { profile: string; valu
 function OutputEditor({ profile, g, outName, existing }: { profile: string; g: Graph; outName: string; existing?: OutControl }) {
   const out = g.outputs.find((o) => o.name === outName);
   const mapped = new Set(out?.controls.map((c) => c.control) ?? []);
-  const options = out?.kind === "vjoy" ? vjoyControls() : XBOX_CONTROLS;
+  const integ = out?.kind === "integration" ? integrations.value.find((i) => i.id === out.integration) : undefined;
+  const options: [string, string][] =
+    out?.kind === "vjoy" ? vjoyControls() : integ ? (integ.controls ?? []).map((c) => [c.id, c.label]) : XBOX_CONTROLS;
   const free = options.filter(([id]) => !mapped.has(id));
   const [control, setControl] = useState(existing?.control ?? free[0]?.[0] ?? "");
   const [expr, setExpr] = useState(existing?.expr ?? draftExpr.value);
   const [label, setLabel] = useState(existing?.action ?? "");
   const [busy, setBusy] = useState(false);
   if (!out) return <p class="muted">Output '{outName}' is not in this profile.</p>;
-  const kind = existing?.kind ?? controlKind(out.kind, control);
+  const kind = existing?.kind ?? integ?.controls?.find((c) => c.id === control)?.kind ?? controlKind(out.kind, control);
   const digital = kind === "button" || kind === "hat_dir";
   const key = `${outName}.${control}`;
   const values = live.value?.active?.profile === profile ? live.value.active.values : null;

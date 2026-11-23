@@ -1,10 +1,12 @@
 //! Windows device I/O for VBind: physical input through DirectInput, virtual
-//! output through ViGEmBus (Xbox 360) and vJoy (joystick), and XInput reads
-//! for verification.
+//! output through ViGEmBus (Xbox 360), vJoy (joystick) and shared memory (game
+//! integrations), Steam game lookup, and XInput reads for verification.
 
 #![cfg(windows)]
 
 pub mod dinput;
+pub mod shm;
+pub mod steam;
 pub mod vigem;
 pub mod vjoy;
 pub mod xinput;

@@ -148,6 +148,23 @@ impl Client {
         )
     }
 
+    /// GET raw bytes (for pictures). Errors still come back as JSON.
+    pub fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let mut res = self
+            .agent
+            .get(format!("{}{path}", self.base))
+            .header("X-VBind-Token", &self.token)
+            .header("X-VBind-Client", self.client_name.as_str())
+            .call()
+            .map_err(|e| local_error(format!("could not reach VBind: {e}")))?;
+        let status = res.status().as_u16();
+        if !(200..300).contains(&status) {
+            let text = res.body_mut().read_to_string().unwrap_or_default();
+            return Err(ApiError { status, body: serde_json::from_str(&text).unwrap_or(Value::String(text)) });
+        }
+        res.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec().map_err(|e| local_error(format!("bad response from VBind: {e}")))
+    }
+
     pub fn send(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
         let url = format!("{}{path}", self.base);
         let tok = self.token.as_str();

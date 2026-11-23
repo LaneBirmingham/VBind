@@ -3,6 +3,8 @@
 //! Everything lives in `%APPDATA%\VBind`:
 //! - `profiles\<id>.json`: shareable profiles
 //! - `layouts\<id>.json`: shareable device layout cards
+//! - `photos\<layout>\`: device photos lined up with layout views (never shared)
+//! - `integrations\<id>\`: installed game integrations and their game-side files
 //! - `assignments.json`: which physical device fills which role on this PC
 //! - `settings.json`: app settings, including the profile to start with
 
@@ -53,6 +55,7 @@ pub struct Store {
     layouts: RwLock<Vec<DeviceLayout>>,
     assignments: RwLock<IndexMap<String, IndexMap<String, Guid>>>,
     settings: RwLock<Settings>,
+    pub integrations: crate::integrations::Integrations,
 }
 
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
@@ -77,6 +80,7 @@ impl Store {
             assignments: RwLock::new(read_json(&dir.join("assignments.json"))),
             profiles: RwLock::new(Vec::new()),
             layouts: RwLock::new(Vec::new()),
+            integrations: crate::integrations::Integrations::open(&dir),
             dir,
         };
         store.reload();
@@ -85,6 +89,11 @@ impl Store {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Device photos, kept on this PC beside the layouts.
+    pub fn photos(&self) -> crate::photos::Photos {
+        crate::photos::Photos::new(&self.dir)
     }
 
     /// Re-read profiles and layouts from disk (files may be edited by hand).
@@ -109,6 +118,7 @@ impl Store {
         }
         layouts.sort_by(|a, b| a.id.cmp(&b.id));
         *self.layouts.write().unwrap() = layouts;
+        self.integrations.reload();
     }
 
     pub fn profiles(&self) -> Vec<StoredProfile> {

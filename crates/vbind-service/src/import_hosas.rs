@@ -409,7 +409,7 @@ pub fn convert(cfg: &Value, lookup: &dyn Fn(Guid) -> Option<DeviceInfo>, opts: &
         devices.insert(name, role);
     }
     let mut outputs = IndexMap::new();
-    outputs.insert("pad".to_string(), OutputDef { kind: OutputKind::Xbox360, label: Some("Virtual Xbox 360".into()), vjoy_id: None });
+    outputs.insert("pad".to_string(), OutputDef { kind: OutputKind::Xbox360, label: Some("Virtual Xbox 360".into()), vjoy_id: None, integration: None, settings: IndexMap::new() });
 
     let polling = int(cfg, "polling_hz", 500);
     let profile = Profile {
@@ -432,6 +432,7 @@ pub fn convert(cfg: &Value, lookup: &dyn Fn(Guid) -> Option<DeviceInfo>, opts: &
         vars,
         map,
         labels,
+        hints: IndexMap::new(),
         polling_hz: if (100..=1000).contains(&polling) && polling != 500 { Some(polling as u32) } else { None },
     };
     if let Err(errs) = profile.compile() {

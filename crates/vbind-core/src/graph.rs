@@ -52,6 +52,9 @@ pub struct GraphOutputControl {
     /// What it does in the game, from the profile's labels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// Memory hint from the profile's hints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     pub kind: ControlKind,
     pub expr: String,
     pub inputs: Vec<GraphRef>,
@@ -63,6 +66,9 @@ pub struct GraphOutput {
     pub name: String,
     pub kind: OutputKind,
     pub label: String,
+    /// Integration id, for `integration` outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration: Option<String>,
     pub controls: Vec<GraphOutputControl>,
 }
 
@@ -155,10 +161,11 @@ pub fn build_graph(
                         m.control.order(),
                         GraphOutputControl {
                             key: m.key.clone(),
-                            control: m.control.id(),
-                            label: m.control.default_label(),
+                            control: o.control_id(m.control),
+                            label: o.control_label(m.control),
                             action: profile.label_for(&m.key).map(str::to_string),
-                            kind: m.control.kind(),
+                            hint: profile.hint_for(&m.key).map(str::to_string),
+                            kind: o.control_kind(m.control),
                             expr: m.expr.clone(),
                             inputs: m.inputs.iter().map(gref).collect(),
                             vars: m.vars.iter().map(|d| compiled.vars[*d].name.clone()).collect(),
@@ -170,10 +177,8 @@ pub fn build_graph(
             GraphOutput {
                 name: o.name.clone(),
                 kind: o.kind,
-                label: o.label.clone().unwrap_or_else(|| match o.kind {
-                    OutputKind::Xbox360 => "Virtual Xbox 360".into(),
-                    OutputKind::Vjoy => format!("Virtual stick (vJoy {})", o.vjoy_id),
-                }),
+                label: o.label.clone().unwrap_or_else(|| o.default_label()),
+                integration: o.integration.as_ref().map(|i| i.id.clone()),
                 controls: controls.into_iter().map(|c| c.1).collect(),
             }
         })
