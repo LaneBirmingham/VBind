@@ -4,7 +4,10 @@
 pub mod api;
 pub mod engine;
 pub mod import_hosas;
+pub mod integrations;
 pub mod panel;
+pub mod photos;
+pub mod render;
 pub mod store;
 
 use std::net::TcpListener as StdListener;
@@ -79,6 +82,8 @@ pub fn start(opts: Options) -> Result<ServiceHandle, String> {
         return Err(format!("VBind is already running (process {}, port {})", other.pid, other.port));
     }
     let store = Arc::new(store::Store::open(data_dir()));
+    // A VBind that crashed may have left input in a game's frame.
+    store.integrations.clear_frames();
     let want = opts.port.unwrap_or(store.settings().port);
     let listener = StdListener::bind(("127.0.0.1", want))
         .or_else(|_| StdListener::bind(("127.0.0.1", 0)))

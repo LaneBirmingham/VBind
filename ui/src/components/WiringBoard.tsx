@@ -5,6 +5,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { Graph } from "../api";
 import { deviceName, drawerOpen, graph, live, panel, roleInput, roleTone, selection, sideTab } from "../state";
 import { fmt, Lamp, Meter, TONES } from "./bits";
+import { AddonStatusText } from "./Integrations";
 
 type PortKey = string; // in:role.control | var:name | out:key
 
@@ -330,7 +331,7 @@ export function WiringBoard({ onAddMapping }: { onAddMapping: (output: string) =
                   <span class="tone-bar" style={{ background: "var(--accent-fill)" }} />
                   <div style={{ minWidth: 0 }}>
                     <div class="name">{o.label}</div>
-                    <div class="sub">{outputStatus(active, o.kind, ol)}</div>
+                    <div class="sub">{outputStatus(active, o.kind, ol, o.integration)}</div>
                   </div>
                 </div>
                 {o.controls.map((c) => {
@@ -368,7 +369,8 @@ export function WiringBoard({ onAddMapping }: { onAddMapping: (output: string) =
   );
 }
 
-function outputStatus(active: boolean, kind: string, ol: { error?: string; xinput_slot?: number; vjoy_id?: number } | undefined) {
+function outputStatus(active: boolean, kind: string, ol: { error?: string; xinput_slot?: number; vjoy_id?: number } | undefined, integration?: string) {
+  if (kind === "integration") return <AddonStatusText id={integration} active={active} error={ol?.error} />;
   if (!active) return "Off - press Start to plug it in";
   if (ol?.error) return <span class="err-text">{ol.error}</span>;
   if (kind === "xbox360") return <span class="ok-text">Plugged in{ol?.xinput_slot != null ? `, player ${ol.xinput_slot + 1}` : ""}</span>;

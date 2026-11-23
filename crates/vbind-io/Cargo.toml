@@ -21,4 +21,7 @@ features = [
   "Win32_UI_WindowsAndMessaging",
   "Win32_Graphics_Gdi",
   "Win32_UI_Input_XboxController",
+  "Win32_System_Memory",
+  "Win32_System_Registry",
+  "Win32_Security",
 ]

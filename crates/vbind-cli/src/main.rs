@@ -30,7 +30,7 @@ enum Cmd {
     Status,
     /// Print the agent guide (how VBind, profiles and expressions work).
     Guide,
-    /// Print a JSON schema: profile, layout or panel.
+    /// Print a JSON schema: profile, layout, integration or panel.
     Schema { kind: String },
     /// List connected physical devices.
     Devices,
@@ -112,6 +112,9 @@ enum Cmd {
     /// Manage device layout cards.
     #[command(subcommand)]
     Layout(LayoutCmd),
+    /// Manage game integrations (optional per-game add-ons).
+    #[command(subcommand)]
+    Integration(IntegrationCmd),
     /// Post to the agent panel in the VBind window.
     #[command(subcommand)]
     Panel(PanelCmd),
@@ -180,6 +183,15 @@ enum ProfileCmd {
     Graph { id: String },
     /// Which connected device fills each role.
     Roles { id: String },
+    /// Pin a memory hint to a mapping: `vbind profile hint <id> pad.a "Index finger"`.
+    Hint {
+        id: String,
+        key: String,
+        /// The hint. Omit with --clear.
+        text: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
     /// Change one mapping: `vbind profile map <id> pad.a "left.b1" --label Boost`.
     Map {
         id: String,
@@ -198,6 +210,68 @@ enum LayoutCmd {
     List,
     Show { id: String },
     Import { file: String },
+    /// The kit of generic parts views are drawn from.
+    Kit,
+    /// Create or replace one view of a device from a JSON file.
+    View { id: String, file: String },
+    /// Remove a view.
+    RemoveView { id: String, view: String },
+    /// Place controls: `vbind layout place <id> --view side b1=34,130 hat1=74,42`.
+    Place {
+        id: String,
+        #[arg(long)]
+        view: Option<String>,
+        /// control=x,y pairs, or control=none to take one off the picture.
+        #[arg(required = true)]
+        items: Vec<String>,
+    },
+    /// Draw a view to a PNG file, with a grid and numbered controls.
+    Render {
+        id: String,
+        #[arg(long)]
+        view: Option<String>,
+        /// Outline the drawing over the view's photo.
+        #[arg(long)]
+        photo: bool,
+        #[arg(short, long, default_value = "layout.png")]
+        output: String,
+    },
+    /// Attach a photo to a view (kept on this PC), or move it with --fit x,y,w,h.
+    Photo {
+        id: String,
+        view: String,
+        file: Option<String>,
+        /// x,y,width,height in view units (may be negative).
+        #[arg(long, allow_hyphen_values = true)]
+        fit: Option<String>,
+        #[arg(long)]
+        remove: bool,
+    },
+    Delete { id: String },
+}
+
+#[derive(Subcommand)]
+enum IntegrationCmd {
+    /// Installed integrations, whether their game-side files are in place, and live status.
+    List,
+    /// Everything about one integration, including its definition and live telemetry.
+    Show { id: String },
+    /// Add an integration from a folder holding integration.json and a files folder.
+    Import {
+        path: String,
+        /// Replace an integration with the same id.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Replace an integration's definition from a JSON file, keeping its files.
+    Save { file: String },
+    /// Copy the game-side files into the game folder (changes game files; ask first).
+    Install { id: String },
+    /// Remove the game-side files and put back anything they replaced.
+    Uninstall { id: String },
+    /// Start the game with the add-on loaded.
+    Launch { id: String },
+    /// Remove an integration from VBind (uninstall it first).
     Delete { id: String },
 }
 
@@ -316,7 +390,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             return Ok(());
         }
         Cmd::Schema { kind } => {
-            let v = vbind_service::api::schema_json(&kind).ok_or_else(|| err("kinds are profile, layout and panel"))?;
+            let v = vbind_service::api::schema_json(&kind).ok_or_else(|| err("kinds are profile, layout, integration and panel"))?;
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
             return Ok(());
         }
@@ -324,7 +398,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             // Validation works offline too.
             let v = read_json_file(&file)?;
             let p: vbind_core::Profile = serde_json::from_value(v).map_err(|e| err(format!("{file}: {e}")))?;
-            return match p.compile() {
+            let integrations = vbind_service::integrations::load_defs(&vbind_service::data_dir());
+            return match p.compile_with(&integrations) {
                 Ok(_) => {
                     println!("{file}: valid");
                     Ok(())
@@ -470,11 +545,73 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 let v = c.post("/layouts", &read_json_file(&file)?)?;
                 print(j, &v, |v| format!("Saved layout {}.", s(v, "saved")));
             }
+            LayoutCmd::Kit => {
+                let v = c.get("/layout-kit")?;
+                print(j, &v, |v| v.as_array().into_iter().flatten().map(|k| format!("{:<18} {}", s(k, "kit"), s(k, "description"))).collect::<Vec<_>>().join("\n"));
+            }
+            LayoutCmd::View { id, file } => {
+                let view = read_json_file(&file)?;
+                let vid = view.get("id").and_then(Value::as_str).ok_or_else(|| err("the view file needs an id"))?.to_string();
+                let v = c.send("PUT", &format!("/layouts/{}/views/{}", enc(&id), enc(&vid)), Some(&view))?;
+                print(j, &v, |v| format!("Saved view '{vid}' ({} controls placed on it).", v["controls_on_view"]));
+            }
+            LayoutCmd::RemoveView { id, view } => {
+                let v = c.send("DELETE", &format!("/layouts/{}/views/{}", enc(&id), enc(&view)), None)?;
+                print(j, &v, |_| format!("Removed view '{view}'."));
+            }
+            LayoutCmd::Place { id, view, items } => {
+                let mut controls = serde_json::Map::new();
+                for it in &items {
+                    let (k, xy) = it.split_once('=').ok_or_else(|| err(format!("'{it}' should look like b1=34,130")))?;
+                    if xy == "none" {
+                        controls.insert(k.into(), Value::Null);
+                        continue;
+                    }
+                    let nums: Vec<f64> = xy.split(',').map(|n| n.trim().parse::<f64>()).collect::<std::result::Result<_, _>>().map_err(|_| err(format!("'{xy}' is not x,y")))?;
+                    if nums.len() != 2 {
+                        return Err(err(format!("'{xy}' is not x,y")));
+                    }
+                    controls.insert(k.into(), json!(nums));
+                }
+                let v = c.post(&format!("/layouts/{}/place", enc(&id)), &json!({ "view": view, "controls": controls }))?;
+                print(j, &v, |_| format!("Placed {} control(s).", items.len()));
+            }
+            LayoutCmd::Render { id, view, photo, output } => {
+                let mut q = vec![format!("photo={photo}")];
+                if let Some(v) = view {
+                    q.push(format!("view={}", enc(&v)));
+                }
+                let png = c.get_bytes(&format!("/layouts/{}/render?{}", enc(&id), q.join("&")))?;
+                std::fs::write(&output, &png).map_err(|e| err(format!("cannot write {output}: {e}")))?;
+                print(j, &json!({ "written": output }), |_| format!("Wrote {output}."));
+            }
+            LayoutCmd::Photo { id, view, file, fit, remove } => {
+                let path = format!("/layouts/{}/views/{}/photo", enc(&id), enc(&view));
+                let v = if remove {
+                    c.send("DELETE", &path, None)?
+                } else {
+                    let mut body = json!({});
+                    if let Some(f) = file {
+                        let abs = std::fs::canonicalize(&f).map_err(|e| err(format!("cannot find {f}: {e}")))?;
+                        body["path"] = json!(abs.to_string_lossy().trim_start_matches(r"\\?\"));
+                    }
+                    if let Some(f) = fit {
+                        let nums: Vec<f64> = f.split(',').map(|n| n.trim().parse::<f64>()).collect::<std::result::Result<_, _>>().map_err(|_| err("--fit is x,y,width,height"))?;
+                        body["fit"] = json!(nums);
+                    }
+                    if body.as_object().is_some_and(|o| o.is_empty()) {
+                        return Err(err("give a photo file, --fit or --remove"));
+                    }
+                    c.send("PUT", &path, Some(&body))?
+                };
+                print(j, &v, |_| if remove { format!("Removed the photo from '{view}'.") } else { format!("Saved the photo for '{view}'. It stays on this PC.") });
+            }
             LayoutCmd::Delete { id } => {
                 let v = c.send("DELETE", &format!("/layouts/{}", enc(&id)), None)?;
                 print(j, &v, |_| format!("Deleted layout {id}."));
             }
         },
+        Cmd::Integration(i) => integration_cmd(&c, j, i)?,
         Cmd::Panel(p) => panel_cmd(&c, j, p)?,
         Cmd::Ask { question, options, text, timeout } => {
             if !j {
@@ -500,6 +637,110 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             });
         }
         Cmd::Serve { .. } | Cmd::Mcp | Cmd::Guide | Cmd::Schema { .. } | Cmd::Open => unreachable!(),
+    }
+    Ok(())
+}
+
+fn human_integration(v: &Value) -> String {
+    let mut out = format!("{}  {}", s(v, "id"), v["name"].as_str().unwrap_or("(invalid)"));
+    if v["valid"] != true {
+        for e in v["errors"].as_array().into_iter().flatten() {
+            out += &format!("\n    problem: {}: {}", s(e, "path"), s(e, "message"));
+        }
+        return out;
+    }
+    let ins = &v["install"];
+    let game = if ins["game_found"] == true {
+        let g = &ins["game"];
+        let mut t = format!("found at {} (build {})", s(g, "dir"), g["build_id"].as_str().unwrap_or("?"));
+        if g["updating"] == true {
+            t += ", Steam is updating it";
+        }
+        match ins["tested_build"].as_bool() {
+            Some(true) => t += ", a tested build",
+            Some(false) => t += ", NOT a build the add-on was tested on",
+            None => {}
+        }
+        t
+    } else {
+        "not found through Steam".into()
+    };
+    out += &format!("\n    game: {game}");
+    if ins["needs_install"] == true {
+        let state = match (ins["installed"].as_bool(), ins["current"].as_bool()) {
+            (Some(true), Some(true)) => "installed".to_string(),
+            (Some(true), _) => "installed, but the game folder no longer matches (game update?); install again".to_string(),
+            _ => "not installed".to_string(),
+        };
+        out += &format!("\n    add-on files: {state}");
+    }
+    let st = &v["live"]["status"];
+    if !st.is_null() {
+        let state = match s(st, "state") {
+            "active" => "active in the game".to_string(),
+            "not_running" => "not running (start the game)".to_string(),
+            "stale" => "not running (the game closed)".to_string(),
+            _ => format!("reports '{}'", s(st, "reported")),
+        };
+        out += &format!("\n    add-on: {state}");
+        for m in st["messages"].as_array().into_iter().flatten() {
+            out += &format!("\n      {}", m.as_str().unwrap_or(""));
+        }
+    }
+    for r in v["live"]["readouts"].as_array().into_iter().flatten() {
+        if !r["value"].is_null() {
+            out += &format!("\n    {}: {}", s(r, "label"), r["value"].as_str().map(str::to_string).unwrap_or_else(|| r["value"].to_string()));
+        }
+    }
+    if v["driving"] == true {
+        out += "\n    driven by the active profile";
+    }
+    out
+}
+
+fn integration_cmd(c: &Client, j: bool, cmd: IntegrationCmd) -> Result<(), ApiError> {
+    match cmd {
+        IntegrationCmd::List => {
+            let v = c.get("/integrations")?;
+            print(j, &v, |v| {
+                let list: Vec<String> = v.as_array().into_iter().flatten().map(human_integration).collect();
+                if list.is_empty() { "No integrations installed.".into() } else { list.join("\n") }
+            });
+        }
+        IntegrationCmd::Show { id } => {
+            let v = c.get(&format!("/integrations/{}", enc(&id)))?;
+            print(j, &v, human_integration);
+        }
+        IntegrationCmd::Import { path, replace } => {
+            let abs = std::fs::canonicalize(&path).map_err(|e| err(format!("cannot find {path}: {e}")))?;
+            let v = c.post("/integrations", &json!({ "path": abs.to_string_lossy().trim_start_matches(r"\\?\"), "replace": replace }))?;
+            print(j, &v, |v| format!("Imported {}.\n{}", s(v, "imported"), human_integration(v)));
+        }
+        IntegrationCmd::Save { file } => {
+            let def = read_json_file(&file)?;
+            let id = def.get("id").and_then(Value::as_str).ok_or_else(|| err("the file needs an id"))?.to_string();
+            let v = c.send("PUT", &format!("/integrations/{}", enc(&id)), Some(&def))?;
+            print(j, &v, |v| format!("Saved {id}.{}", if v["reloaded"] == true { " The active profile restarted with it." } else { "" }));
+        }
+        IntegrationCmd::Install { id } => {
+            let v = c.post(&format!("/integrations/{}/install", enc(&id)), &json!({}))?;
+            print(j, &v, |v| {
+                let files: Vec<String> = v["files"].as_array().into_iter().flatten().map(|f| format!("  {}", f.as_str().unwrap_or(""))).collect();
+                format!("Installed {id} into {}:\n{}", s(v, "game_dir"), files.join("\n"))
+            });
+        }
+        IntegrationCmd::Uninstall { id } => {
+            let v = c.post(&format!("/integrations/{}/uninstall", enc(&id)), &json!({}))?;
+            print(j, &v, |v| format!("Uninstalled {id} ({} files removed).", v["files"].as_array().map_or(0, |a| a.len())));
+        }
+        IntegrationCmd::Launch { id } => {
+            let v = c.post(&format!("/integrations/{}/launch", enc(&id)), &json!({}))?;
+            print(j, &v, |v| format!("Asked Steam to start the game with: {}", v["args"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")));
+        }
+        IntegrationCmd::Delete { id } => {
+            let v = c.send("DELETE", &format!("/integrations/{}", enc(&id)), None)?;
+            print(j, &v, |_| format!("Deleted {id}."));
+        }
     }
     Ok(())
 }
@@ -581,6 +822,15 @@ fn profile_cmd(c: &Client, j: bool, cmd: ProfileCmd) -> Result<(), ApiError> {
         ProfileCmd::Roles { id } => {
             let v = c.get(&format!("/profiles/{}/roles", enc(&id)))?;
             print(j, &v, human_roles);
+        }
+        ProfileCmd::Hint { id, key, text, clear } => {
+            if text.is_none() && !clear {
+                return Err(err("give the hint text, or --clear"));
+            }
+            let mut body = serde_json::Map::new();
+            body.insert(key.clone(), if clear { Value::Null } else { json!(text) });
+            let v = c.send("PUT", &format!("/profiles/{}/hints", enc(&id)), Some(&Value::Object(body)))?;
+            print(j, &v, |_| if clear { format!("Cleared the hint for {key}.") } else { format!("Saved the hint for {key}.") });
         }
         ProfileCmd::Map { id, key, expr, label, remove } => {
             if expr.is_none() && !remove && label.is_none() {
