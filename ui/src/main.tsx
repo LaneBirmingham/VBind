@@ -1,8 +1,9 @@
 import { render } from "preact";
-import { useRef } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import { api } from "./api";
 import { ConnectAgent } from "./components/ConnectAgent";
 import { DevicesView } from "./components/DevicesView";
+import { PictureView } from "./components/PictureView";
 import { importFile, ProfilesView } from "./components/ProfilesView";
 import { draftExpr, showConnect, Side } from "./components/Side";
 import { WiringBoard } from "./components/WiringBoard";
@@ -200,8 +201,27 @@ function Banners() {
   );
 }
 
+const MAPPING_MODE_KEY = "vbind.mappingMode";
+
+function savedMappingMode(): "wiring" | "picture" {
+  try {
+    return localStorage.getItem(MAPPING_MODE_KEY) === "picture" ? "picture" : "wiring";
+  } catch {
+    return "wiring";
+  }
+}
+
 function MappingView() {
   const file = useRef<HTMLInputElement>(null);
+  const [mode, setModeState] = useState(savedMappingMode);
+  const setMode = (m: "wiring" | "picture") => {
+    setModeState(m);
+    try {
+      localStorage.setItem(MAPPING_MODE_KEY, m);
+    } catch {
+      /* per-viewer convenience only */
+    }
+  };
   const resp = graph.value;
   const board = boardProfile.value;
   const summary = profiles.value.find((p) => p.id === board);
@@ -255,16 +275,28 @@ function MappingView() {
       <div class="board-head">
         <h1>{summary?.name ?? resp.graph.profile}</h1>
         {summary?.game && <span class="chip">{summary.game}</span>}
+        <span class="seg big" role="group" aria-label="Show the mapping as">
+          <button aria-pressed={mode === "wiring"} onClick={() => setMode("wiring")} title="How the profile works: inputs, mixers and outputs">
+            Wiring
+          </button>
+          <button aria-pressed={mode === "picture"} onClick={() => setMode("picture")} title="Where things are: your devices, with each control's game button">
+            Picture
+          </button>
+        </span>
       </div>
       {summary?.description && <p class="board-desc">{summary.description}</p>}
-      <WiringBoard
-        onAddMapping={(output) => {
-          draftExpr.value = "";
-          selection.value = `new:${output}`;
-          drawerOpen.value = true;
-          sideTab.value = "inspect";
-        }}
-      />
+      {mode === "picture" ? (
+        <PictureView />
+      ) : (
+        <WiringBoard
+          onAddMapping={(output) => {
+            draftExpr.value = "";
+            selection.value = `new:${output}`;
+            drawerOpen.value = true;
+            sideTab.value = "inspect";
+          }}
+        />
+      )}
     </div>
   );
 }

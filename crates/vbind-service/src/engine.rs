@@ -13,10 +13,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use vbind_core::expr::HatDir;
 use vbind_core::math;
+use vbind_core::integration::{FrameEncoder, Integration, json_channel_bytes};
 use vbind_core::output::{OutputKind, Report};
-use vbind_core::profile::{CompiledProfile, Runtime};
+use vbind_core::profile::{CompiledOutput, CompiledProfile, Runtime};
 use vbind_core::state::{DeviceInfo, DeviceState, Guid};
 use vbind_io::dinput::{DirectInput, Scanner};
+use vbind_io::shm::SharedMemory;
 use vbind_io::vigem::{Vigem, XboxPad};
 use vbind_io::vjoy::{Vjoy, VjoyDeviceInfo, VjoyStick};
 
@@ -87,6 +89,9 @@ pub struct OutputSnapshot {
     pub xinput_slot: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vjoy_id: Option<u32>,
+    /// Integration id, for integration outputs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integration: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip)]
@@ -171,11 +176,62 @@ impl EngineHandle {
 enum OutputDev {
     Xbox { pad: XboxPad, slot: Option<u32> },
     Vjoy(VjoyStick),
+    Integration(IntegrationOut),
+}
+
+/// Drives a game integration's shared-memory frame.
+struct IntegrationOut {
+    def: Arc<Integration>,
+    frame: SharedMemory,
+    /// Held open so the game-side add-on can read it whenever it starts.
+    settings: Option<SharedMemory>,
+    encoder: FrameEncoder,
+    epoch: Instant,
+}
+
+impl IntegrationOut {
+    fn open(o: &CompiledOutput) -> Result<IntegrationOut, String> {
+        let def = o.integration.clone().ok_or("the integration is not installed")?;
+        let mut frame = SharedMemory::create(&def.frame.shared_memory, def.frame.size)?;
+        frame.clear();
+        let mut out = IntegrationOut { encoder: FrameEncoder::new(&def), def, frame, settings: None, epoch: Instant::now() };
+        out.write_settings(o.settings_json.as_deref())?;
+        Ok(out)
+    }
+
+    fn write_settings(&mut self, json: Option<&str>) -> Result<(), String> {
+        match (&self.def.channels.settings, json) {
+            (Some(ch), Some(text)) => {
+                let mut m = match self.settings.take() {
+                    Some(m) => m,
+                    None => SharedMemory::create(&ch.shared_memory, ch.size)?,
+                };
+                m.write(&json_channel_bytes(text, ch.size));
+                self.settings = Some(m);
+            }
+            _ => self.settings = None,
+        }
+        Ok(())
+    }
+
+    fn update(&mut self, values: &[f64]) {
+        let now = self.epoch.elapsed().as_millis() as u64;
+        let bytes = self.encoder.encode(&self.def, values, now);
+        self.frame.write(bytes);
+    }
+}
+
+impl Drop for IntegrationOut {
+    fn drop(&mut self) {
+        // Leave the game nothing to act on.
+        self.frame.clear();
+    }
 }
 
 struct OutputSlot {
     kind: OutputKind,
     vjoy_id: u8,
+    integration: Option<String>,
     dev: OutputDev,
     error: Option<String>,
 }
@@ -372,8 +428,23 @@ impl Engine {
         let mut old: Vec<Option<OutputSlot>> = std::mem::take(&mut self.outputs).into_iter().map(Some).collect();
         let mut fresh = Vec::new();
         for o in &spec.compiled.outputs {
-            let reuse = old.iter_mut().find(|s| s.as_ref().is_some_and(|s| s.kind == o.kind && (o.kind != OutputKind::Vjoy || s.vjoy_id == o.vjoy_id)));
-            if let Some(slot) = reuse.and_then(Option::take) {
+            let integration = o.integration.as_ref().map(|i| i.id.clone());
+            let reuse = old.iter_mut().find(|s| {
+                s.as_ref().is_some_and(|s| {
+                    s.kind == o.kind
+                        && (o.kind != OutputKind::Vjoy || s.vjoy_id == o.vjoy_id)
+                        && match (&s.dev, &o.integration) {
+                            (OutputDev::Integration(cur), Some(new)) => *cur.def == **new,
+                            _ => true,
+                        }
+                })
+            });
+            if let Some(mut slot) = reuse.and_then(Option::take) {
+                if let OutputDev::Integration(cur) = &mut slot.dev
+                    && let Err(e) = cur.write_settings(o.settings_json.as_deref())
+                {
+                    slot.error = Some(e);
+                }
                 fresh.push(slot);
                 continue;
             }
@@ -383,9 +454,10 @@ impl Engine {
                     Some(v) => v.acquire(o.vjoy_id as u32).map(OutputDev::Vjoy),
                     None => Err(self.vjoy_error.clone().unwrap_or_else(|| "vJoy is not installed".into())),
                 },
+                OutputKind::Integration => IntegrationOut::open(o).map(OutputDev::Integration),
             };
             match made {
-                Ok(dev) => fresh.push(OutputSlot { kind: o.kind, vjoy_id: o.vjoy_id, dev, error: None }),
+                Ok(dev) => fresh.push(OutputSlot { kind: o.kind, vjoy_id: o.vjoy_id, integration, dev, error: None }),
                 Err(e) => {
                     // Roll back: keep nothing half-made.
                     drop(fresh);
@@ -552,6 +624,10 @@ impl Engine {
                 let r = match (&mut slot.dev, report) {
                     (OutputDev::Xbox { pad, .. }, Report::Xbox(x)) => pad.update(x),
                     (OutputDev::Vjoy(v), Report::Vjoy(j)) => v.update(j),
+                    (OutputDev::Integration(i), Report::Integration(values)) => {
+                        i.update(values);
+                        Ok(())
+                    }
                     _ => Ok(()),
                 };
                 slot.error = r.err();
@@ -658,6 +734,7 @@ impl Engine {
                         OutputDev::Vjoy(v) => Some(v.id()),
                         _ => None,
                     },
+                    integration: slot.integration.clone(),
                     error: slot.error.clone(),
                     report: Some(rep.clone()),
                 })

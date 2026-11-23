@@ -15,6 +15,9 @@ pub enum OutputKind {
     /// Virtual joystick (flight stick) through the vJoy driver: 8 axes,
     /// up to 128 buttons and 4 hats.
     Vjoy,
+    /// A game integration: controls written straight to a game-side add-on
+    /// through shared memory. Name it with `integration`.
+    Integration,
 }
 
 impl OutputKind {
@@ -22,6 +25,7 @@ impl OutputKind {
         match self {
             OutputKind::Xbox360 => "xbox360",
             OutputKind::Vjoy => "vjoy",
+            OutputKind::Integration => "integration",
         }
     }
 }
@@ -73,11 +77,16 @@ pub enum OutputControl {
     VjoyAxis(u8),
     VjoyButton(u8),
     VjoyHat(u8, HatDir),
+    /// Index into an integration's controls.
+    Integration(u16),
 }
 
 impl OutputControl {
+    /// Parse a control name for a built-in output kind. Integration controls
+    /// need their definition; use [`crate::profile::CompiledOutput::parse_control`].
     pub fn parse(kind: OutputKind, name: &str) -> Result<OutputControl, String> {
         match kind {
+            OutputKind::Integration => Err("integration controls are named by the integration".into()),
             OutputKind::Xbox360 => {
                 let alias = match name {
                     "lthumb" => "ls",
@@ -140,14 +149,17 @@ impl OutputControl {
             OutputControl::VjoyAxis(a) => crate::state::AXIS_NAMES[a as usize].to_string(),
             OutputControl::VjoyButton(b) => format!("b{}", b as u16 + 1),
             OutputControl::VjoyHat(h, d) => format!("hat{}.{}", h + 1, d.name()),
+            OutputControl::Integration(i) => format!("#{i}"),
         }
     }
 
+    /// Kind for built-in controls; integration controls report `Button`
+    /// here, so ask their output instead.
     pub fn kind(&self) -> ControlKind {
         match *self {
             OutputControl::Xbox(i) => XBOX_CONTROLS[i as usize].1,
             OutputControl::VjoyAxis(_) => ControlKind::Axis,
-            OutputControl::VjoyButton(_) => ControlKind::Button,
+            OutputControl::VjoyButton(_) | OutputControl::Integration(_) => ControlKind::Button,
             OutputControl::VjoyHat(..) => ControlKind::HatDir,
         }
     }
@@ -159,6 +171,7 @@ impl OutputControl {
             OutputControl::VjoyAxis(a) => format!("Axis {}", crate::state::AXIS_NAMES[a as usize].to_uppercase()),
             OutputControl::VjoyButton(b) => format!("Button {}", b as u16 + 1),
             OutputControl::VjoyHat(h, d) => format!("Hat {} {}", h + 1, d.name()),
+            OutputControl::Integration(i) => format!("Control {}", i + 1),
         }
     }
 
@@ -169,13 +182,16 @@ impl OutputControl {
             OutputControl::VjoyAxis(a) => a as u32,
             OutputControl::VjoyButton(b) => 100 + b as u32,
             OutputControl::VjoyHat(h, d) => 1000 + h as u32 * 10 + d as u32,
+            OutputControl::Integration(i) => i as u32,
         }
     }
 }
 
-/// Every control an output kind offers, in display order.
+/// Every control an output kind offers, in display order. Integrations list
+/// their own controls.
 pub fn all_controls(kind: OutputKind) -> Vec<OutputControl> {
     match kind {
+        OutputKind::Integration => Vec::new(),
         OutputKind::Xbox360 => (0..XBOX_CONTROLS.len() as u8).map(OutputControl::Xbox).collect(),
         OutputKind::Vjoy => {
             let mut v: Vec<OutputControl> = (0..MAX_AXES as u8).map(OutputControl::VjoyAxis).collect();
@@ -242,13 +258,26 @@ mod serde_big_array {
 pub enum Report {
     Xbox(XboxReport),
     Vjoy(VjoyReport),
+    /// Value per integration control, by control index.
+    Integration(Vec<f64>),
 }
 
 impl Report {
-    pub fn neutral(kind: OutputKind) -> Report {
+    /// Neutral report; `controls` is the integration's control count.
+    pub fn neutral(kind: OutputKind, controls: usize) -> Report {
         match kind {
             OutputKind::Xbox360 => Report::Xbox(XboxReport::default()),
             OutputKind::Vjoy => Report::Vjoy(VjoyReport::default()),
+            OutputKind::Integration => Report::Integration(vec![0.0; controls]),
+        }
+    }
+
+    /// Back to neutral without reallocating.
+    pub fn reset(&mut self) {
+        match self {
+            Report::Xbox(x) => *x = XboxReport::default(),
+            Report::Vjoy(v) => *v = VjoyReport::default(),
+            Report::Integration(v) => v.iter_mut().for_each(|x| *x = 0.0),
         }
     }
 
@@ -290,6 +319,11 @@ impl Report {
                     r.hats[h as usize] = Some(combine_hat(r.hats[h as usize], d));
                 }
             }
+            (Report::Integration(v), OutputControl::Integration(i)) => {
+                if let Some(x) = v.get_mut(i as usize) {
+                    *x = if value.is_finite() { value } else { 0.0 };
+                }
+            }
             _ => {}
         }
     }
@@ -320,7 +354,7 @@ mod tests {
 
     #[test]
     fn xbox_report_fields() {
-        let mut r = Report::neutral(OutputKind::Xbox360);
+        let mut r = Report::neutral(OutputKind::Xbox360, 0);
         r.set(OutputControl::parse(OutputKind::Xbox360, "rt").unwrap(), 1.0);
         r.set(OutputControl::parse(OutputKind::Xbox360, "lx").unwrap(), -1.0);
         r.set(OutputControl::parse(OutputKind::Xbox360, "a").unwrap(), 1.0);
@@ -337,12 +371,12 @@ mod tests {
         let up = OutputControl::parse(OutputKind::Vjoy, "hat1.up").unwrap();
         let right = OutputControl::parse(OutputKind::Vjoy, "hat1.right").unwrap();
         let left = OutputControl::parse(OutputKind::Vjoy, "hat1.left").unwrap();
-        let mut r = Report::neutral(OutputKind::Vjoy);
+        let mut r = Report::neutral(OutputKind::Vjoy, 0);
         r.set(up, 1.0);
         r.set(right, 1.0);
         let Report::Vjoy(v) = &r else { panic!() };
         assert_eq!(v.hats[0], Some(4500));
-        let mut r = Report::neutral(OutputKind::Vjoy);
+        let mut r = Report::neutral(OutputKind::Vjoy, 0);
         r.set(up, 1.0);
         r.set(left, 1.0);
         let Report::Vjoy(v) = &r else { panic!() };

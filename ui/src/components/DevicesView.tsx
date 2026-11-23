@@ -4,6 +4,8 @@
 import type { Device, Graph, Layout } from "../api";
 import { graph, layouts, live, outputInputs, panel, readControl } from "../state";
 import { DeviceDrawing } from "./DeviceDrawing";
+import { LiveViews } from "./Figure";
+import { IntegrationsSection } from "./Integrations";
 import { fmt, Lamp, Meter } from "./bits";
 import { shortName } from "./WiringBoard";
 
@@ -46,6 +48,7 @@ export function DevicesView({ devices }: { devices: Device[] }) {
           <DeviceCard d={d} layout={layouts.value.find((l) => l.id === d.layout)} g={resp?.graph} role={resp?.devices.find((x) => x.device?.instance === d.instance)?.role} />
         ))}
       </div>
+      <IntegrationsSection />
     </div>
   );
 }
@@ -84,13 +87,15 @@ function DeviceCard({ d, layout, g, role }: { d: Device; layout?: Layout; g?: Gr
         {!roleInfo && d.roles.length > 0 && <span class="chip">{d.roles.map((r) => r.role).join(", ")}</span>}
       </div>
 
-      {layout && (
+      {layout && layout.views?.length ? (
+        <LiveViews layout={layout} isOn={(k) => isOn(s, k)} mapped={(k) => usedKeys.has(k) || hl.some((h) => layoutKey(h.control) === k)} />
+      ) : layout ? (
         <DeviceDrawing
           layout={layout}
           isOn={(k) => isOn(s, k)}
           mapped={(k) => usedKeys.has(k) || hl.some((h) => layoutKey(h.control) === k)}
         />
-      )}
+      ) : null}
 
       {d.axes.length > 0 && (
         <div>

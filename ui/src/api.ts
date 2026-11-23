@@ -93,6 +93,7 @@ export interface Status {
     vjoy: { available: boolean; error?: string | null; devices: any[] };
   };
   input_error?: string | null;
+  integrations?: { id: string; valid: boolean }[];
   agent: { client: string; seconds_ago: number } | null;
   cli?: string | null;
   data_dir: string;
@@ -122,11 +123,14 @@ export interface DeviceLive {
   buttons: number[];
 }
 
+export type OutputKind = "xbox360" | "vjoy" | "integration";
+
 export interface OutputLive {
   name: string;
-  kind: "xbox360" | "vjoy";
+  kind: OutputKind;
   xinput_slot?: number;
   vjoy_id?: number;
+  integration?: string;
   error?: string;
   report?: any;
 }
@@ -185,13 +189,15 @@ export interface Graph {
   vars: { name: string; label?: string; expr: string; depth: number; inputs: GraphRef[]; vars: string[] }[];
   outputs: {
     name: string;
-    kind: "xbox360" | "vjoy";
+    kind: OutputKind;
     label: string;
+    integration?: string;
     controls: {
       key: string;
       control: string;
       label: string;
       action?: string;
+      hint?: string;
       kind: "axis" | "trigger" | "button" | "hat_dir";
       expr: string;
       inputs: GraphRef[];
@@ -205,14 +211,84 @@ export interface GraphResponse {
   devices: { role: string; resolution: RoleResolution; device: { instance: Guid; name: string } | null; layout: string | null }[];
 }
 
+export interface LayoutControl {
+  label: string;
+  group?: string;
+  pos?: [number, number];
+  view?: string;
+  at?: [number, number];
+  size?: number;
+}
+
+export interface LayoutView {
+  id: string;
+  label: string;
+  size: [number, number];
+  parts: unknown[];
+}
+
 export interface Layout {
   vbind_layout: number;
   id: string;
   name: string;
   match: { vid?: string; pid?: string; name?: string }[];
   shape?: "stick" | "throttle" | "gamepad" | "wheel" | "pedals" | "generic";
-  controls: Record<string, { label: string; group?: string; pos?: [number, number] }>;
+  controls: Record<string, LayoutControl>;
   hidden?: string[];
+  views?: LayoutView[];
+}
+
+export type ShapeStyle = "body" | "detail" | "hole" | "line";
+
+/** A layout view resolved to plain shapes by VBind, with its photo if any. */
+export interface DrawingView {
+  id: string;
+  label: string;
+  size: [number, number];
+  shapes: { d: string; style: ShapeStyle }[];
+  photo?: { fit: [number, number, number, number]; width: number; height: number; rev: number; url: string };
+}
+
+export interface Drawing {
+  id: string;
+  name: string;
+  shape?: Layout["shape"];
+  views: DrawingView[];
+}
+
+/** URL for an API resource used directly by an <img> or <image> (needs the token in the query). */
+export function apiUrl(path: string): string {
+  return `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token())}`;
+}
+
+export type AddonState = "not_running" | "active" | "other" | "stale";
+
+/** A game integration as `/integrations` lists it. */
+export interface IntegrationSummary {
+  id: string;
+  name: string | null;
+  game: string | null;
+  description?: string;
+  valid: boolean;
+  errors: { path: string; message: string }[];
+  install: {
+    installed: boolean;
+    current?: boolean;
+    installed_build?: string | null;
+    game?: { dir: string; build_id?: string | null; updating: boolean; name?: string | null } | null;
+    game_found?: boolean;
+    tested_build?: boolean | null;
+    needs_install?: boolean;
+  };
+  driving: boolean;
+  used_by: string[];
+  has_launch?: boolean;
+  source?: { url?: string; version?: string; license?: string; notes?: string } | null;
+  controls?: { id: string; label: string; kind: "axis" | "trigger" | "button"; group?: string | null; description?: string | null }[];
+  live?: {
+    status: { state: AddonState; reported?: string; messages?: string[]; age_ms?: number } | null;
+    readouts: { label: string; value: unknown }[];
+  };
 }
 
 export type Card =

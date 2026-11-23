@@ -18,3 +18,4 @@ ureq = { version = "3", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+base64 = "0.23"

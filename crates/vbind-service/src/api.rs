@@ -6,7 +6,7 @@ use crate::import_hosas;
 use crate::panel::{Panel, PanelPost};
 use crate::store::Store;
 use axum::body::Body;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -23,7 +23,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use vbind_core::expr::{self, Env, EvalState, InputControl, Resolver, Scope};
 use vbind_core::graph::build_graph;
-use vbind_core::layout::DeviceLayout;
+use vbind_core::drawing::{ResolvedView, View};
+use vbind_core::layout::{ControlInfo, DeviceLayout};
 use vbind_core::output::Report;
 use vbind_core::profile::{Diagnostic, Profile};
 use vbind_core::resolve::{RoleResolution, resolve_roles};
@@ -126,12 +127,27 @@ pub fn router(state: Shared) -> Router {
         .route("/profiles/{id}/roles", get(roles))
         .route("/profiles/{id}/assignments", put(assign))
         .route("/profiles/{id}/map", post(edit_map))
+        .route("/profiles/{id}/hints", put(set_hints))
         .route("/deactivate", post(deactivate))
         .route("/layouts", get(list_layouts).post(save_layout_post))
         .route("/layouts/{id}", get(get_layout).put(save_layout_put).delete(delete_layout))
+        .route("/layouts/{id}/drawing", get(layout_drawing))
+        .route("/layouts/{id}/render", get(render_layout))
+        .route("/layouts/{id}/place", post(place_controls))
+        .route("/layouts/{id}/views/{view}", put(put_view).delete(delete_view))
+        .route(
+            "/layouts/{id}/views/{view}/photo",
+            get(get_photo).put(put_photo).delete(delete_photo).layer(DefaultBodyLimit::max(crate::photos::MAX_PHOTO_BYTES * 4 / 3 + 64 * 1024)),
+        )
+        .route("/layout-kit", get(layout_kit))
         .route("/panel", get(get_panel).post(post_panel).delete(clear_panel))
         .route("/panel/ask", post(ask))
         .route("/panel/answer", post(answer))
+        .route("/integrations", get(list_integrations).post(import_integration))
+        .route("/integrations/{id}", get(get_integration).put(put_integration).delete(delete_integration))
+        .route("/integrations/{id}/install", post(install_integration))
+        .route("/integrations/{id}/uninstall", post(uninstall_integration))
+        .route("/integrations/{id}/launch", post(launch_integration))
         .route("/import/hosas-bridge", post(import_bridge))
         .route("/reload", post(reload))
         .layer(middleware::from_fn_with_state(state.clone(), auth));
@@ -228,6 +244,11 @@ impl AppState {
         resolve_roles(p, &self.snapshot().devices, &self.store.assignments(&p.id))
     }
 
+    /// Compile against the integrations installed on this PC.
+    pub fn compile(&self, p: &Profile) -> Result<vbind_core::CompiledProfile, Vec<Diagnostic>> {
+        p.compile_with(&self.store.integrations.defs())
+    }
+
     fn profile(&self, id: &str) -> Result<Profile, ApiError> {
         self.store.profile(id).ok_or_else(|| ApiError::not_found("profile", id))
     }
@@ -252,7 +273,7 @@ impl AppState {
 
     pub async fn activate(&self, id: &str) -> ApiResult {
         let p = self.profile(id)?;
-        let compiled = p.compile().map_err(ApiError::invalid)?;
+        let compiled = self.compile(&p).map_err(ApiError::invalid)?;
         let res = self.resolve(&p);
         if let Some(bad) = res.iter().find(|r| !r.is_ready()) {
             let msg = match bad.status {
@@ -332,6 +353,7 @@ async fn status(State(st): State<Shared>) -> ApiResult {
             "vjoy": { "available": snap.vjoy_error.is_none(), "error": snap.vjoy_error, "devices": snap.vjoy_devices },
         },
         "input_error": snap.input_error,
+        "integrations": st.store.integrations.list().iter().map(|i| json!({ "id": i.id, "valid": i.def.is_some() })).collect::<Vec<_>>(),
         "agent": agent_json,
         "cli": cli_path(),
     }))
@@ -357,6 +379,7 @@ pub fn schema_json(kind: &str) -> Option<Value> {
     let s = match kind {
         "profile" => schemars::schema_for!(Profile),
         "layout" => schemars::schema_for!(DeviceLayout),
+        "integration" => schemars::schema_for!(vbind_core::integration::Integration),
         "panel" => schemars::schema_for!(PanelPost),
         _ => return None,
     };
@@ -408,8 +431,12 @@ fn state_json(s: &DeviceState) -> Value {
     })
 }
 
-fn report_json(r: &Report) -> Value {
+fn report_json(r: &Report, out: &vbind_core::profile::CompiledOutput) -> Value {
     match r {
+        Report::Integration(values) => {
+            let ids = out.integration.as_ref().map(|i| i.controls.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+            Value::Object(ids.into_iter().zip(values).map(|(k, v)| (k, json!(round3(*v)))).collect())
+        }
         Report::Xbox(x) => serde_json::to_value(x).unwrap_or(Value::Null),
         Report::Vjoy(v) => json!({
             "axes": v.axes.iter().map(|a| round3(*a)).collect::<Vec<_>>(),
@@ -438,9 +465,9 @@ pub fn live_json(st: &AppState, device_filter: Option<Guid>) -> Value {
             "roles": c.roles.iter().zip(&a.roles).map(|(r, g)| (r.clone(), json!(g))).collect::<serde_json::Map<_, _>>(),
             "vars": c.vars.iter().zip(&a.vars).map(|(v, x)| (v.name.clone(), json!(round3(*x)))).collect::<serde_json::Map<_, _>>(),
             "values": c.mappings.iter().zip(&a.values).map(|(m, x)| (m.key.clone(), json!(round3(*x)))).collect::<serde_json::Map<_, _>>(),
-            "outputs": a.outputs.iter().map(|o| {
+            "outputs": a.outputs.iter().zip(&c.outputs).map(|(o, co)| {
                 let mut v = serde_json::to_value(o).unwrap_or(Value::Null);
-                if let Some(r) = &o.report { v["report"] = report_json(r); }
+                if let Some(r) = &o.report { v["report"] = report_json(r, co); }
                 v
             }).collect::<Vec<_>>(),
         })
@@ -679,7 +706,7 @@ impl Scope for EvalScope<'_> {
 async fn eval_expr(State(st): State<Shared>, Json(b): Json<EvalBody>) -> ApiResult {
     let pid = b.profile.clone().or_else(|| st.active_id()).ok_or_else(|| ApiError::bad("give a profile (no profile is active)"))?;
     let p = st.profile(&pid)?;
-    let compiled = p.compile().map_err(ApiError::invalid)?;
+    let compiled = st.compile(&p).map_err(ApiError::invalid)?;
     let scope = EvalScope(&p);
     let node = expr::parse(&b.expr)
         .and_then(|a| Resolver::new(&scope).resolve(&a))
@@ -710,7 +737,7 @@ async fn list_profiles(State(st): State<Shared>) -> ApiResult {
         .iter()
         .map(|sp| match &sp.profile {
             Some(p) => {
-                let errors = p.compile().err().unwrap_or_default();
+                let errors = st.compile(p).err().unwrap_or_default();
                 json!({
                     "id": p.id, "name": p.name, "game": p.game, "description": p.description,
                     "outputs": p.outputs.values().map(|o| o.kind).collect::<Vec<_>>(),
@@ -736,7 +763,7 @@ fn parse_profile(v: Value) -> Result<Profile, ApiError> {
 }
 
 async fn save(st: &AppState, p: Profile) -> ApiResult {
-    p.compile().map_err(ApiError::invalid)?;
+    st.compile(&p).map_err(ApiError::invalid)?;
     st.store.save_profile(&p).map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     changed(st, "profiles");
     let mut reloaded = false;
@@ -798,7 +825,7 @@ async fn validate_profile(State(st): State<Shared>, Json(v): Json<Value>) -> Api
         Ok(p) => p,
         Err(e) => return ok(json!({ "valid": false, "diagnostics": [Diagnostic { path: "(file)".into(), message: e.to_string(), pos: None }] })),
     };
-    match p.compile() {
+    match st.compile(&p) {
         Ok(c) => {
             let g = graph_for(&st, &p, &c);
             ok(json!({ "valid": true, "diagnostics": [], "roles": st.resolve(&p), "graph": g }))
@@ -833,7 +860,7 @@ fn graph_for(st: &AppState, p: &Profile, c: &vbind_core::CompiledProfile) -> vbi
 
 async fn graph(State(st): State<Shared>, Path(id): Path<String>) -> ApiResult {
     let p = st.profile(&id)?;
-    let c = p.compile().map_err(ApiError::invalid)?;
+    let c = st.compile(&p).map_err(ApiError::invalid)?;
     let g = graph_for(&st, &p, &c);
     let res = st.resolve(&p);
     let snap = st.snapshot();
@@ -912,6 +939,22 @@ async fn edit_map(State(st): State<Shared>, Path(id): Path<String>, Json(e): Jso
     save(&st, p).await
 }
 
+/// `{"pad.a": "Index finger, like a gas pedal", "pad.b": null}`: set or clear memory hints.
+async fn set_hints(State(st): State<Shared>, Path(id): Path<String>, Json(body): Json<IndexMap<String, Option<String>>>) -> ApiResult {
+    let mut p = st.profile(&id)?;
+    for (key, hint) in body {
+        match hint.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()) {
+            Some(h) => {
+                p.hints.insert(key, h);
+            }
+            None => {
+                p.hints.shift_remove(&key);
+            }
+        }
+    }
+    save(&st, p).await
+}
+
 // ---------------------------------------------------------------- layouts
 
 async fn list_layouts(State(st): State<Shared>) -> ApiResult {
@@ -949,9 +992,258 @@ async fn delete_layout(State(st): State<Shared>, Path(id): Path<String>) -> ApiR
     if !removed {
         return Err(ApiError::not_found("layout", &id));
     }
+    st.store.photos().delete_all(&id);
     changed(&st, "layouts");
     ok(json!({ "deleted": id }))
 }
+
+fn find_layout(st: &AppState, id: &str) -> Result<DeviceLayout, ApiError> {
+    st.store.layouts().into_iter().find(|l| l.id == id).ok_or_else(|| ApiError::not_found("layout", id))
+}
+
+fn find_view<'a>(l: &'a DeviceLayout, view: &str) -> Result<&'a View, ApiError> {
+    l.views.iter().find(|v| v.id == view).ok_or_else(|| {
+        let ids = l.views.iter().map(|v| v.id.as_str()).collect::<Vec<_>>().join(", ");
+        ApiError::not_found("view", view).with("views", if ids.is_empty() { "(none yet)".to_string() } else { ids })
+    })
+}
+
+/// Validate and save a changed layout.
+fn save_changed_layout(st: &AppState, l: &DeviceLayout) -> Result<(), ApiError> {
+    let errs = l.validate();
+    if !errs.is_empty() {
+        return Err(ApiError::invalid(errs));
+    }
+    st.store.save_layout(l).map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    changed(st, "layouts");
+    Ok(())
+}
+
+/// The kit of generic parts views are drawn from.
+async fn layout_kit() -> ApiResult {
+    ok(vbind_core::drawing::kit_list())
+}
+
+/// A layout's views as plain shapes, ready to draw, with any photos.
+async fn layout_drawing(State(st): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    let l = find_layout(&st, &id)?;
+    let photos = st.store.photos().list(&id);
+    let views: Vec<Value> = l
+        .views
+        .iter()
+        .map(|v| {
+            let r: ResolvedView = v.resolve();
+            let mut j = serde_json::to_value(r).unwrap_or(Value::Null);
+            if let Some(p) = photos.get(&v.id) {
+                j["photo"] = json!({ "fit": p.fit, "width": p.width, "height": p.height, "rev": p.rev, "url": format!("/api/layouts/{id}/views/{}/photo?rev={}", v.id, p.rev) });
+            }
+            j
+        })
+        .collect();
+    ok(json!({ "id": l.id, "name": l.name, "shape": l.shape, "views": views }))
+}
+
+#[derive(Deserialize)]
+struct RenderQuery {
+    #[serde(default)]
+    view: Option<String>,
+    /// Draw the photo under the outlines.
+    #[serde(default)]
+    photo: bool,
+    #[serde(default)]
+    size: Option<f64>,
+    #[serde(default)]
+    grid: Option<bool>,
+    /// Comma-separated control ids to fill in.
+    #[serde(default)]
+    highlight: Option<String>,
+}
+
+/// A PNG of one view with a grid and numbered controls, for agents to check their drawing.
+async fn render_layout(State(st): State<Shared>, Path(id): Path<String>, Query(q): Query<RenderQuery>) -> Result<Response, ApiError> {
+    let l = find_layout(&st, &id)?;
+    let view = match &q.view {
+        Some(v) => find_view(&l, v)?.clone(),
+        None => l.views.first().cloned().ok_or_else(|| ApiError::bad(format!("layout '{id}' has no views yet; add one with set_layout_view")))?,
+    };
+    let photos = st.store.photos();
+    let photo = if q.photo {
+        let info = photos.list(&id).shift_remove(&view.id).ok_or_else(|| ApiError::bad(format!("view '{}' has no photo", view.id)))?;
+        let (bytes, _) = photos.read(&id, &view.id).ok_or_else(|| ApiError::not_found("photo", &view.id))?;
+        Some((info, bytes))
+    } else {
+        None
+    };
+    let opts = crate::render::RenderOptions {
+        size_px: q.size.unwrap_or(760.0).clamp(200.0, 2000.0),
+        grid: q.grid.unwrap_or(true),
+        highlight: q.highlight.map(|h| h.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
+    };
+    let png = tokio::task::spawn_blocking(move || {
+        let svg = crate::render::view_svg(&l, &view, photo.as_ref().map(|(i, b)| (i, b.as_slice())), &opts);
+        crate::render::png(&svg)
+    })
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], png).into_response())
+}
+
+/// Create or replace one view. The body is the view; its id may be left out.
+async fn put_view(State(st): State<Shared>, Path((id, view)): Path<(String, String)>, Json(mut v): Json<Value>) -> ApiResult {
+    let mut l = find_layout(&st, &id)?;
+    match v.get("id").and_then(Value::as_str) {
+        Some(given) if given != view => return Err(ApiError::bad("view id does not match the URL")),
+        Some(_) => {}
+        None => {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("id".into(), json!(view));
+            }
+        }
+    }
+    let new: View = serde_json::from_value(v).map_err(|e| ApiError::invalid(vec![Diagnostic { path: format!("views.{view}"), message: e.to_string(), pos: None }]))?;
+    match l.views.iter_mut().find(|x| x.id == view) {
+        Some(slot) => *slot = new,
+        None => l.views.push(new),
+    }
+    save_changed_layout(&st, &l)?;
+    let placed = l.controls.values().filter(|c| c.at.is_some() && l.view_of(c).is_some_and(|x| x.id == view)).count();
+    ok(json!({ "saved": id, "view": view, "views": l.views.iter().map(|v| &v.id).collect::<Vec<_>>(), "controls_on_view": placed }))
+}
+
+/// Remove a view, its photo, and the placements of controls drawn on it.
+async fn delete_view(State(st): State<Shared>, Path((id, view)): Path<(String, String)>) -> ApiResult {
+    let mut l = find_layout(&st, &id)?;
+    find_view(&l, &view)?;
+    let single = l.views.len() == 1;
+    for c in l.controls.values_mut() {
+        if c.view.as_deref() == Some(view.as_str()) || (single && c.view.is_none()) {
+            c.view = None;
+            c.at = None;
+        }
+    }
+    l.views.retain(|v| v.id != view);
+    save_changed_layout(&st, &l)?;
+    let _ = st.store.photos().delete(&id, &view);
+    ok(json!({ "deleted": view }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Placement {
+    #[serde(default)]
+    at: Option<[f64; 2]>,
+    #[serde(default)]
+    view: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    size: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PlaceValue {
+    At([f64; 2]),
+    Full(Placement),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaceBody {
+    /// View for every control that does not name its own.
+    #[serde(default)]
+    view: Option<String>,
+    /// Control id to `[x, y]`, to `{at, view, label, size}`, or to null to take it off the picture.
+    controls: IndexMap<String, Option<PlaceValue>>,
+}
+
+/// Move controls on a layout's views (also adds controls when given a label).
+async fn place_controls(State(st): State<Shared>, Path(id): Path<String>, Json(b): Json<PlaceBody>) -> ApiResult {
+    let mut l = find_layout(&st, &id)?;
+    if let Some(v) = &b.view {
+        find_view(&l, v)?;
+    }
+    for (key, value) in b.controls {
+        let Some(value) = value else {
+            if let Some(c) = l.controls.get_mut(&key) {
+                c.at = None;
+                c.view = None;
+            }
+            continue;
+        };
+        let p = match value {
+            PlaceValue::At(at) => Placement { at: Some(at), view: None, label: None, size: None },
+            PlaceValue::Full(p) => p,
+        };
+        if !l.controls.contains_key(&key) {
+            let label = p.label.clone().ok_or_else(|| ApiError::bad(format!("'{key}' is not in this layout yet; give it a label to add it")))?;
+            l.controls.insert(key.clone(), ControlInfo::new(label));
+        }
+        let entry = l.controls.get_mut(&key).expect("just inserted");
+        if let Some(label) = p.label {
+            entry.label = label;
+        }
+        if let Some(at) = p.at {
+            entry.at = Some(at);
+            entry.view = p.view.or_else(|| b.view.clone()).or_else(|| entry.view.clone());
+        } else if let Some(v) = p.view {
+            entry.view = Some(v);
+        }
+        if p.size.is_some() {
+            entry.size = p.size;
+        }
+    }
+    save_changed_layout(&st, &l)?;
+    ok(json!({ "saved": id, "controls": l.controls }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PhotoBody {
+    /// A PNG, JPEG or WebP file on this PC.
+    #[serde(default)]
+    path: Option<String>,
+    /// The image itself, base64 encoded (the window uses this).
+    #[serde(default)]
+    data: Option<String>,
+    /// Where the photo sits in the view: `[x, y, width, height]` in view units. Default: fitted inside the view.
+    #[serde(default)]
+    fit: Option<[f64; 4]>,
+}
+
+/// Add or replace a view's photo, or move it with only `fit`.
+async fn put_photo(State(st): State<Shared>, Path((id, view)): Path<(String, String)>, Json(b): Json<PhotoBody>) -> ApiResult {
+    let l = find_layout(&st, &id)?;
+    let size = find_view(&l, &view)?.size;
+    let bytes = match (&b.path, &b.data) {
+        (Some(_), Some(_)) => return Err(ApiError::bad("give path or data, not both")),
+        (Some(path), None) => Some(std::fs::read(path).map_err(|e| ApiError::bad(format!("cannot read {path}: {e}")))?),
+        (None, Some(data)) => {
+            use base64::Engine as _;
+            let data = data.split_once("base64,").map(|(_, d)| d).unwrap_or(data);
+            Some(base64::engine::general_purpose::STANDARD.decode(data.trim()).map_err(|e| ApiError::bad(format!("data is not base64: {e}")))?)
+        }
+        (None, None) => None,
+    };
+    let info = st.store.photos().set(&id, &view, size, bytes.as_deref(), b.fit).map_err(ApiError::bad)?;
+    changed(&st, "layouts");
+    ok(json!({ "saved": view, "photo": { "fit": info.fit, "width": info.width, "height": info.height }, "view_size": size }))
+}
+
+async fn get_photo(State(st): State<Shared>, Path((id, view)): Path<(String, String)>) -> Result<Response, ApiError> {
+    let (bytes, mime) = st.store.photos().read(&id, &view).ok_or_else(|| ApiError::not_found("photo", &format!("{id}/{view}")))?;
+    Ok(([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "private, max-age=31536000".to_string())], bytes).into_response())
+}
+
+async fn delete_photo(State(st): State<Shared>, Path((id, view)): Path<(String, String)>) -> ApiResult {
+    if !st.store.photos().delete(&id, &view).map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))? {
+        return Err(ApiError::not_found("photo", &format!("{id}/{view}")));
+    }
+    changed(&st, "layouts");
+    ok(json!({ "deleted": view }))
+}
+
 
 // ---------------------------------------------------------------- panel
 
@@ -1073,7 +1365,169 @@ async fn reload(State(st): State<Shared>) -> ApiResult {
     st.store.reload();
     changed(&st, "profiles");
     changed(&st, "layouts");
+    changed(&st, "integrations");
     ok(json!({ "reloaded": true }))
+}
+
+// ---------------------------------------------------------------- game integrations
+
+fn integration_summary(st: &AppState, s: &crate::integrations::StoredIntegration, detail: bool) -> Value {
+    let used_by: Vec<String> = st
+        .store
+        .profiles()
+        .iter()
+        .filter_map(|p| p.profile.as_ref())
+        .filter(|p| p.outputs.values().any(|o| o.integration.as_deref() == Some(s.id.as_str())))
+        .map(|p| p.id.clone())
+        .collect();
+    let driving = st.snapshot().active.as_ref().is_some_and(|a| a.compiled.outputs.iter().any(|o| o.integration.as_ref().is_some_and(|i| i.id == s.id)));
+    let mut v = json!({
+        "id": s.id,
+        "name": s.def.as_ref().map(|d| d.name.clone()),
+        "game": s.def.as_ref().and_then(|d| d.game.as_ref().map(|g| g.name.clone())),
+        "valid": s.def.is_some(),
+        "errors": s.errors,
+        "install": st.store.integrations.install_state(s),
+        "driving": driving,
+        "used_by": used_by,
+    });
+    if let Some(d) = &s.def {
+        v["live"] = crate::integrations::live(d);
+        v["has_launch"] = json!(d.launch.is_some());
+        v["source"] = serde_json::to_value(&d.source).unwrap_or(Value::Null);
+        v["description"] = json!(d.description);
+        v["controls"] = d
+            .controls
+            .iter()
+            .map(|(k, c)| json!({ "id": k, "label": c.label, "kind": c.kind, "group": c.group, "description": c.description }))
+            .collect::<Vec<_>>()
+            .into();
+        v["settings"] = serde_json::to_value(&d.settings).unwrap_or(Value::Null);
+        if detail {
+            v["definition"] = serde_json::to_value(&**d).unwrap_or(Value::Null);
+            v["dir"] = json!(s.dir);
+        }
+    }
+    v
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f).await.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn list_integrations(State(st): State<Shared>) -> ApiResult {
+    let out = blocking(move || st.store.integrations.list().iter().map(|s| integration_summary(&st, s, false)).collect::<Vec<_>>()).await?;
+    ok(out)
+}
+
+fn find_integration(st: &AppState, id: &str) -> Result<crate::integrations::StoredIntegration, ApiError> {
+    st.store.integrations.get(id).ok_or_else(|| ApiError::not_found("integration", id))
+}
+
+async fn get_integration(State(st): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    let s = find_integration(&st, &id)?;
+    ok(blocking(move || integration_summary(&st, &s, true)).await?)
+}
+
+fn import_error(e: crate::integrations::ImportError) -> ApiError {
+    use crate::integrations::ImportError::*;
+    match e {
+        Invalid(d) => {
+            let summary = d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("; ");
+            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("integration has problems: {summary}")).with("diagnostics", d)
+        }
+        Exists(id) => ApiError::new(StatusCode::CONFLICT, format!("integration '{id}' already exists; pass replace=true to overwrite")),
+        Bad(m) => ApiError::bad(m),
+    }
+}
+
+/// Re-run the active profile when it drives a changed integration, so the
+/// engine uses the new definition.
+async fn refresh_integration_users(st: &AppState, id: &str) -> Result<bool, ApiError> {
+    let uses = st.snapshot().active.as_ref().and_then(|a| {
+        a.compiled.outputs.iter().any(|o| o.integration.as_ref().is_some_and(|i| i.id == id)).then(|| a.compiled.id.clone())
+    });
+    match uses {
+        Some(pid) => {
+            let _ = st.activate(&pid).await?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportIntegrationBody {
+    /// A folder holding integration.json and a files folder, or an integration.json path.
+    path: String,
+    #[serde(default)]
+    replace: bool,
+}
+
+async fn import_integration(State(st): State<Shared>, Json(b): Json<ImportIntegrationBody>) -> ApiResult {
+    let def = st.store.integrations.import(std::path::Path::new(&b.path), b.replace).map_err(import_error)?;
+    changed(&st, "integrations");
+    changed(&st, "profiles");
+    let reloaded = refresh_integration_users(&st, &def.id).await?;
+    let s = find_integration(&st, &def.id)?;
+    let st2 = st.clone();
+    let mut v = blocking(move || integration_summary(&st2, &s, false)).await?;
+    v["imported"] = json!(def.id);
+    v["reloaded"] = json!(reloaded);
+    ok(v)
+}
+
+async fn put_integration(State(st): State<Shared>, Path(id): Path<String>, Json(v): Json<Value>) -> ApiResult {
+    let def: vbind_core::integration::Integration = serde_json::from_value(v).map_err(|e| {
+        import_error(crate::integrations::ImportError::Invalid(vec![Diagnostic { path: "(file)".into(), message: e.to_string(), pos: None }]))
+    })?;
+    if def.id != id {
+        return Err(ApiError::bad(format!("integration id '{}' does not match the URL '{id}'", def.id)));
+    }
+    if st.store.integrations.get(&id).is_none() {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, format!("no integration '{id}'; import its folder first so its files come with it")));
+    }
+    st.store.integrations.save_def(&def).map_err(import_error)?;
+    changed(&st, "integrations");
+    changed(&st, "profiles");
+    let reloaded = refresh_integration_users(&st, &id).await?;
+    ok(json!({ "saved": id, "reloaded": reloaded }))
+}
+
+async fn delete_integration(State(st): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    if st.snapshot().active.as_ref().is_some_and(|a| a.compiled.outputs.iter().any(|o| o.integration.as_ref().is_some_and(|i| i.id == id))) {
+        return Err(ApiError::new(StatusCode::CONFLICT, format!("the running profile drives '{id}'; stop it first")));
+    }
+    let removed = st.store.integrations.delete(&id).map_err(|e| ApiError::new(StatusCode::CONFLICT, e))?;
+    if !removed {
+        return Err(ApiError::not_found("integration", &id));
+    }
+    changed(&st, "integrations");
+    changed(&st, "profiles");
+    ok(json!({ "deleted": id }))
+}
+
+type IntegrationJob = fn(&crate::integrations::Integrations, &str) -> Result<Value, String>;
+
+async fn integration_job(st: Shared, id: String, job: IntegrationJob) -> ApiResult {
+    find_integration(&st, &id)?;
+    let st2 = st.clone();
+    let r = blocking(move || job(&st2.store.integrations, &id)).await?;
+    changed(&st, "integrations");
+    r.map(Json).map_err(|e| ApiError::new(StatusCode::CONFLICT, e))
+}
+
+async fn install_integration(State(st): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    integration_job(st, id, |i, id| i.install(id)).await
+}
+
+async fn uninstall_integration(State(st): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    integration_job(st, id, |i, id| i.uninstall(id)).await
+}
+
+async fn launch_integration(State(st): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    integration_job(st, id, |i, id| i.launch(id)).await
 }
 
 // ---------------------------------------------------------------- the window's files
