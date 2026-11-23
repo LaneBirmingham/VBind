@@ -133,6 +133,7 @@ when pressed and `0` otherwise. Anything `>= 0.5` counts as true.
 | `between(v, lo, hi)` | `1` when `lo <= v <= hi` |
 | `if(c, a, b)` | `a` when `c` is true, else `b` |
 | `toggle(x)` | flips between 0 and 1 each time `x` becomes true (latching modes) |
+| `taps(x, n=2, ms=60)` | each time `x` becomes true, `n` quick taps (`ms` on, `ms` off); for keys a game wants double-tapped |
 
 Errors name the exact place and suggest fixes ("unknown function 'hosas_drv'.
 Did you mean hosas_drive()?"). Try expressions live with
@@ -159,6 +160,30 @@ configured to have the axes and buttons you map.
 **integration** (`"type": "integration", "integration": "<id>"`): the
 controls the integration defines (`vbind integration show <id>`), with
 their own kinds. Optional `settings` override the integration's defaults.
+A setting can also be mapped like a control, as `<output>.settings.<name>`,
+so a button changes it while playing; VBind rewrites the settings channel
+whenever the value changes. A setting with `choices` takes the choice at the
+expression's value (0 is the first, so `toggle(left.b11)` flips between the
+first two), an on/off setting turns on at 0.5, and a number setting takes the
+value, clamped to its range. Map a setting or fix it under `settings`, not both.
+
+**keyboard** (`"type": "keyboard"`): keys and the mouse, for games or
+actions that only take keyboard and mouse input. Keys are `key.<name>` by
+US layout position (`key.a`, `key.1`, `key.f1`, `key.lalt`, `key.lctrl`,
+`key.space`, `key.up`, `key.numpad5`) and are held while the expression is
+true; mouse buttons are `mouse.left`, `mouse.right`, `mouse.middle`,
+`mouse.x1`, `mouse.x2`; `mouse.x`, `mouse.y` (positive is right and down) and
+`mouse.wheel` (positive scrolls up) take -1 to 1 as a speed. Optional
+`settings`: `mouse_speed` (pixels per second at full deflection, default 1200)
+and `wheel_speed` (notches per second, default 8). Input goes to the focused
+window, and everything held is released when the profile stops. Example, a
+hat that holds Alt and moves the mouse for free look:
+
+```json
+"outputs": { "kbm": { "type": "keyboard", "settings": { "mouse_speed": 900 } } },
+"map": { "kbm.key.lalt": "right.hat1.x != 0 || right.hat1.y != 0",
+         "kbm.mouse.x": "right.hat1.x", "kbm.mouse.y": "-right.hat1.y" }
+```
 
 ## Common patterns
 
@@ -173,6 +198,8 @@ their own kinds. Optional `settings` override the integration's defaults.
 - Shift layer: `"vars": {"shift": "left.b5"}`, then
   `"pad.x": "right.b2 and not shift"`, `"pad.y": "right.b2 and shift"`.
 - Latching mode: `"vars": {"walking": "toggle(left.b7)"}`.
+- One button that double-taps a key: `"kbm.key.lalt": "taps(right.b6)"`;
+  combine with a hold as `right.hat1.x != 0 || taps(right.b6)`.
 - Two sticks as one vJoy stick: `"stick.x": "right.x"`, `"stick.y": "right.y"`,
   `"stick.slider1": "left.y"`, `"stick.b1": "right.b1"`, `"stick.b13": "left.b1"`.
 
@@ -331,7 +358,8 @@ Check `vbind integration list` (`list_integrations`) first. To add one:
   "game": { "type": "integration", "integration": "space-engineers-2",
             "settings": { "flightModelMode": "DirectAngularFlight" } }
 },
-"map": { "game.pitch": "deadzone(left.y, 0.05)", "game.dampeners": "right.b2" }
+"map": { "game.pitch": "deadzone(left.y, 0.05)", "game.dampeners": "right.b2",
+         "game.settings.translationControlMode": "toggle(left.b11)" }
 ```
 
 6. `vbind integration launch <id>` (`launch_game`) starts the game with the

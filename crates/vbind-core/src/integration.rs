@@ -555,8 +555,18 @@ impl Integration {
         if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 
+    pub fn setting_index(&self, id: &str) -> Option<usize> {
+        self.settings.get_index_of(id)
+    }
+
     /// The settings JSON for a profile: defaults, overridden by `overrides`.
     pub fn settings_json(&self, overrides: &IndexMap<String, Value>) -> Result<Option<String>, Vec<Diagnostic>> {
+        self.settings_json_live(overrides, &[])
+    }
+
+    /// The settings JSON with some settings driven by mapped values, as
+    /// (setting index, expression value) pairs. Live values win over `overrides`.
+    pub fn settings_json_live(&self, overrides: &IndexMap<String, Value>, live: &[(usize, f64)]) -> Result<Option<String>, Vec<Diagnostic>> {
         let mut errors = Vec::new();
         for (k, v) in overrides {
             match self.settings.get(k) {
@@ -578,14 +588,60 @@ impl Integration {
         let Some(ch) = &self.channels.settings else {
             return Ok(None);
         };
-        let obj: serde_json::Map<String, Value> =
+        let mut obj: serde_json::Map<String, Value> =
             self.settings.iter().map(|(k, d)| (k.clone(), overrides.get(k).cloned().unwrap_or_else(|| d.default.clone()))).collect();
+        for &(i, v) in live {
+            if let Some((k, def)) = self.settings.get_index(i) {
+                obj.insert(k.clone(), setting_from_number(def, v));
+            }
+        }
         let text = serde_json::to_string(&obj).unwrap_or_default();
         if text.len() >= ch.size as usize {
             return Err(vec![diag("settings", format!("the settings come to {} bytes; the channel holds {}", text.len(), ch.size - 1))]);
         }
         Ok(Some(text))
     }
+}
+
+/// Why a setting cannot be driven by an expression, if it cannot.
+pub fn check_setting_mappable(def: &SettingDef) -> Result<(), String> {
+    if def.choices.is_empty() && !def.default.is_number() && !def.default.is_boolean() {
+        return Err(format!("{} takes text, so a mapping cannot drive it; set it under the output's settings instead", def.label));
+    }
+    Ok(())
+}
+
+/// The setting value an expression value stands for: a choice picks by
+/// index (0 is the first, so `toggle(b)` flips between the first two), an
+/// on/off setting turns on at 0.5, and a number is clamped to its range.
+pub fn setting_from_number(def: &SettingDef, v: f64) -> Value {
+    let v = if v.is_finite() { v } else { 0.0 };
+    if !def.choices.is_empty() {
+        let i = (v.round().max(0.0) as usize).min(def.choices.len() - 1);
+        return def.choices[i].clone();
+    }
+    if def.default.is_boolean() {
+        return Value::Bool(crate::expr::truthy(v));
+    }
+    let n = v.clamp(def.min.unwrap_or(f64::MIN), def.max.unwrap_or(f64::MAX));
+    if def.default.is_i64() || def.default.is_u64() {
+        Value::from(n.round() as i64)
+    } else {
+        serde_json::Number::from_f64(n).map_or(Value::from(0), Value::Number)
+    }
+}
+
+/// An expression value that gives a mapped setting its longest JSON text,
+/// for checking the settings channel is big enough.
+pub fn longest_setting_input(def: &SettingDef) -> f64 {
+    if !def.choices.is_empty() {
+        return def.choices.iter().enumerate().max_by_key(|(_, c)| c.to_string().len()).map_or(0.0, |(i, _)| i as f64);
+    }
+    if def.default.is_boolean() {
+        return 0.0;
+    }
+    // a long negative fraction; clamping keeps it inside the setting's range
+    -1e15 - 0.123_456_789_012_345
 }
 
 fn check_setting_value(def: &SettingDef, v: &Value) -> Result<(), String> {
@@ -854,6 +910,44 @@ mod tests {
         let errs = d.settings_json(&o).unwrap_err();
         assert_eq!(errs.len(), 2);
         assert!(errs.iter().any(|e| e.message.contains("Did you mean 'mode'")));
+    }
+
+    fn profile_with(map: &str, settings: &str) -> Result<crate::profile::CompiledProfile, Vec<Diagnostic>> {
+        let text = format!(
+            r#"{{ "vbind": 1, "id": "t", "name": "T",
+                 "devices": {{ "s": {{ "match": [{{ "vid": "044F" }}] }} }},
+                 "outputs": {{ "g": {{ "type": "integration", "integration": "test-game", "settings": {settings} }} }},
+                 "map": {map} }}"#
+        );
+        crate::profile::Profile::from_json(&text).unwrap().compile_with(&vec![std::sync::Arc::new(sample())])
+    }
+
+    #[test]
+    fn mapped_settings_change_live() {
+        let c = profile_with(r#"{ "g.fire": "s.b1", "g.settings.mode": "toggle(s.b2)", "g.settings.gain": "s.slider1 * 30" }"#, r#"{}"#).unwrap();
+        let o = &c.outputs[0];
+        assert_eq!(o.live_settings, vec![0, 1]);
+        let m = c.mappings.iter().find(|m| m.key == "g.settings.mode").unwrap();
+        assert_eq!(o.control_id(m.control), "settings.mode");
+        assert_eq!(o.control_label(m.control), "Flight model");
+        assert_eq!(o.control_kind(m.control), ControlKind::Button);
+        // starts on the first choice; gain clamps to its range
+        let json = |v: &[f64]| serde_json::from_str::<Value>(&o.live_settings_json(v).unwrap().unwrap()).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(o.settings_json.as_deref().unwrap()).unwrap(), serde_json::json!({"mode": "Direct", "gain": 1}));
+        assert_eq!(json(&[1.0, 30.0]), serde_json::json!({"mode": "Reticle", "gain": 20}));
+        assert_eq!(json(&[0.4, 7.6]), serde_json::json!({"mode": "Direct", "gain": 8}));
+    }
+
+    #[test]
+    fn mapped_settings_are_checked() {
+        let errs = profile_with(r#"{ "g.settings.mdoe": "s.b1" }"#, "{}").unwrap_err();
+        assert!(errs[0].message.contains("Did you mean 'mode'"), "{errs:?}");
+        let errs = profile_with(r#"{ "g.settings.mode": "s.b1" }"#, r#"{ "mode": "Reticle" }"#).unwrap_err();
+        assert!(errs[0].message.contains("also sets it"), "{errs:?}");
+        // unmapped settings keep their fixed value
+        let c = profile_with(r#"{ "g.settings.mode": "s.b1" }"#, r#"{ "gain": 5 }"#).unwrap();
+        let t = c.outputs[0].live_settings_json(&[1.0, 0.0]).unwrap().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&t).unwrap(), serde_json::json!({"mode": "Reticle", "gain": 5}));
     }
 
     #[test]

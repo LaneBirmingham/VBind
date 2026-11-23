@@ -1,6 +1,7 @@
 //! Virtual output devices: their controls and the reports sent to drivers.
 
 use crate::expr::HatDir;
+use crate::keyboard::{KeyboardControl, KeyboardReport};
 use crate::math;
 use crate::state::{MAX_AXES, MAX_BUTTONS, MAX_HATS};
 use schemars::JsonSchema;
@@ -18,6 +19,9 @@ pub enum OutputKind {
     /// A game integration: controls written straight to a game-side add-on
     /// through shared memory. Name it with `integration`.
     Integration,
+    /// Keyboard keys, mouse buttons and mouse movement, sent to whichever
+    /// window has focus.
+    Keyboard,
 }
 
 impl OutputKind {
@@ -26,6 +30,7 @@ impl OutputKind {
             OutputKind::Xbox360 => "xbox360",
             OutputKind::Vjoy => "vjoy",
             OutputKind::Integration => "integration",
+            OutputKind::Keyboard => "keyboard",
         }
     }
 }
@@ -79,6 +84,11 @@ pub enum OutputControl {
     VjoyHat(u8, HatDir),
     /// Index into an integration's controls.
     Integration(u16),
+    /// Index into an integration's settings. Mapping one changes the setting
+    /// live, for example a button that toggles a flight mode.
+    IntegrationSetting(u16),
+    /// A key, mouse button or mouse axis on the keyboard output.
+    Keyboard(KeyboardControl),
 }
 
 impl OutputControl {
@@ -87,6 +97,7 @@ impl OutputControl {
     pub fn parse(kind: OutputKind, name: &str) -> Result<OutputControl, String> {
         match kind {
             OutputKind::Integration => Err("integration controls are named by the integration".into()),
+            OutputKind::Keyboard => KeyboardControl::parse(name).map(OutputControl::Keyboard),
             OutputKind::Xbox360 => {
                 let alias = match name {
                     "lthumb" => "ls",
@@ -150,6 +161,8 @@ impl OutputControl {
             OutputControl::VjoyButton(b) => format!("b{}", b as u16 + 1),
             OutputControl::VjoyHat(h, d) => format!("hat{}.{}", h + 1, d.name()),
             OutputControl::Integration(i) => format!("#{i}"),
+            OutputControl::IntegrationSetting(i) => format!("settings.#{i}"),
+            OutputControl::Keyboard(k) => k.id(),
         }
     }
 
@@ -159,8 +172,9 @@ impl OutputControl {
         match *self {
             OutputControl::Xbox(i) => XBOX_CONTROLS[i as usize].1,
             OutputControl::VjoyAxis(_) => ControlKind::Axis,
-            OutputControl::VjoyButton(_) | OutputControl::Integration(_) => ControlKind::Button,
+            OutputControl::VjoyButton(_) | OutputControl::Integration(_) | OutputControl::IntegrationSetting(_) => ControlKind::Button,
             OutputControl::VjoyHat(..) => ControlKind::HatDir,
+            OutputControl::Keyboard(k) => k.kind(),
         }
     }
 
@@ -172,6 +186,8 @@ impl OutputControl {
             OutputControl::VjoyButton(b) => format!("Button {}", b as u16 + 1),
             OutputControl::VjoyHat(h, d) => format!("Hat {} {}", h + 1, d.name()),
             OutputControl::Integration(i) => format!("Control {}", i + 1),
+            OutputControl::IntegrationSetting(i) => format!("Setting {}", i + 1),
+            OutputControl::Keyboard(k) => k.label(),
         }
     }
 
@@ -183,6 +199,8 @@ impl OutputControl {
             OutputControl::VjoyButton(b) => 100 + b as u32,
             OutputControl::VjoyHat(h, d) => 1000 + h as u32 * 10 + d as u32,
             OutputControl::Integration(i) => i as u32,
+            OutputControl::IntegrationSetting(i) => 10_000 + i as u32,
+            OutputControl::Keyboard(k) => k.order(),
         }
     }
 }
@@ -192,6 +210,7 @@ impl OutputControl {
 pub fn all_controls(kind: OutputKind) -> Vec<OutputControl> {
     match kind {
         OutputKind::Integration => Vec::new(),
+        OutputKind::Keyboard => KeyboardControl::all().into_iter().map(OutputControl::Keyboard).collect(),
         OutputKind::Xbox360 => (0..XBOX_CONTROLS.len() as u8).map(OutputControl::Xbox).collect(),
         OutputKind::Vjoy => {
             let mut v: Vec<OutputControl> = (0..MAX_AXES as u8).map(OutputControl::VjoyAxis).collect();
@@ -258,17 +277,21 @@ mod serde_big_array {
 pub enum Report {
     Xbox(XboxReport),
     Vjoy(VjoyReport),
-    /// Value per integration control, by control index.
-    Integration(Vec<f64>),
+    /// Integration values by control index, plus one value per setting
+    /// (only settings the profile maps are read).
+    Integration { controls: Vec<f64>, settings: Vec<f64> },
+    Keyboard(KeyboardReport),
 }
 
 impl Report {
-    /// Neutral report; `controls` is the integration's control count.
-    pub fn neutral(kind: OutputKind, controls: usize) -> Report {
+    /// Neutral report; `controls` and `settings` are the integration's
+    /// control and setting counts.
+    pub fn neutral(kind: OutputKind, controls: usize, settings: usize) -> Report {
         match kind {
             OutputKind::Xbox360 => Report::Xbox(XboxReport::default()),
             OutputKind::Vjoy => Report::Vjoy(VjoyReport::default()),
-            OutputKind::Integration => Report::Integration(vec![0.0; controls]),
+            OutputKind::Integration => Report::Integration { controls: vec![0.0; controls], settings: vec![0.0; settings] },
+            OutputKind::Keyboard => Report::Keyboard(KeyboardReport::default()),
         }
     }
 
@@ -277,7 +300,8 @@ impl Report {
         match self {
             Report::Xbox(x) => *x = XboxReport::default(),
             Report::Vjoy(v) => *v = VjoyReport::default(),
-            Report::Integration(v) => v.iter_mut().for_each(|x| *x = 0.0),
+            Report::Integration { controls, settings } => controls.iter_mut().chain(settings.iter_mut()).for_each(|x| *x = 0.0),
+            Report::Keyboard(k) => k.reset(),
         }
     }
 
@@ -319,7 +343,9 @@ impl Report {
                     r.hats[h as usize] = Some(combine_hat(r.hats[h as usize], d));
                 }
             }
-            (Report::Integration(v), OutputControl::Integration(i)) => {
+            (Report::Keyboard(k), OutputControl::Keyboard(c)) => k.set(c, value),
+            (Report::Integration { controls: v, .. }, OutputControl::Integration(i))
+            | (Report::Integration { settings: v, .. }, OutputControl::IntegrationSetting(i)) => {
                 if let Some(x) = v.get_mut(i as usize) {
                     *x = if value.is_finite() { value } else { 0.0 };
                 }
@@ -354,7 +380,7 @@ mod tests {
 
     #[test]
     fn xbox_report_fields() {
-        let mut r = Report::neutral(OutputKind::Xbox360, 0);
+        let mut r = Report::neutral(OutputKind::Xbox360, 0, 0);
         r.set(OutputControl::parse(OutputKind::Xbox360, "rt").unwrap(), 1.0);
         r.set(OutputControl::parse(OutputKind::Xbox360, "lx").unwrap(), -1.0);
         r.set(OutputControl::parse(OutputKind::Xbox360, "a").unwrap(), 1.0);
@@ -371,12 +397,12 @@ mod tests {
         let up = OutputControl::parse(OutputKind::Vjoy, "hat1.up").unwrap();
         let right = OutputControl::parse(OutputKind::Vjoy, "hat1.right").unwrap();
         let left = OutputControl::parse(OutputKind::Vjoy, "hat1.left").unwrap();
-        let mut r = Report::neutral(OutputKind::Vjoy, 0);
+        let mut r = Report::neutral(OutputKind::Vjoy, 0, 0);
         r.set(up, 1.0);
         r.set(right, 1.0);
         let Report::Vjoy(v) = &r else { panic!() };
         assert_eq!(v.hats[0], Some(4500));
-        let mut r = Report::neutral(OutputKind::Vjoy, 0);
+        let mut r = Report::neutral(OutputKind::Vjoy, 0, 0);
         r.set(up, 1.0);
         r.set(left, 1.0);
         let Report::Vjoy(v) = &r else { panic!() };

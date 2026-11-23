@@ -2,7 +2,7 @@
 // Xbox face buttons are coloured letters, other buttons are labelled pills,
 // and the D-pad is a cross with the mapped arms lit.
 
-export type OutKind = "xbox360" | "vjoy" | "integration";
+export type OutKind = "xbox360" | "vjoy" | "integration" | "keyboard";
 
 export interface GlyphSpec {
   kind: "face" | "pill" | "dpad";
@@ -18,11 +18,17 @@ const PILL: Record<string, string> = {
   lx: "L ↔", ly: "L ↕", rx: "R ↔", ry: "R ↕",
 };
 const DIRS = ["up", "down", "left", "right"];
+/** Short keyboard and mouse glyphs; other keys use their label ("Left Alt", "F1"). */
+const KEY_PILL: Record<string, string> = {
+  "mouse.x": "Mouse ↔", "mouse.y": "Mouse ↕", "mouse.wheel": "Wheel",
+  "mouse.left": "LMB", "mouse.right": "RMB", "mouse.middle": "MMB", "mouse.x1": "Mouse 4", "mouse.x2": "Mouse 5",
+};
 
 /** The glyph for one output control, for example `a`, `dpad_up` or (vJoy) `b3`.
  * Game integrations have no button art, so their glyph is the control's name. */
 export function glyphFor(kind: OutKind, control: string, label?: string): GlyphSpec {
   if (kind === "integration") return { kind: "pill", text: shortPill(label ?? control) };
+  if (kind === "keyboard") return { kind: "pill", text: shortPill(KEY_PILL[control] ?? label ?? control) };
   if (kind === "xbox360") {
     if (FACE[control]) return { kind: "face", text: control.toUpperCase(), color: FACE[control] };
     if (control.startsWith("dpad_")) return { kind: "dpad", text: "D-pad", arms: [control.slice(5)] };
@@ -117,7 +123,7 @@ function shortPill(text: string): string {
 
 /** Plain words for a glyph, for screen readers and tooltips. */
 export function glyphWords(kind: OutKind, control: string, label?: string): string {
-  if (kind === "integration") return label ?? control;
+  if (kind === "integration" || kind === "keyboard") return label ?? control;
   if (kind === "xbox360") {
     if (FACE[control]) return control.toUpperCase();
     if (control.startsWith("dpad_")) return `D-pad ${control.slice(5)}`;

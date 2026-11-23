@@ -5,6 +5,7 @@
 #![cfg(windows)]
 
 pub mod dinput;
+pub mod sendinput;
 pub mod shm;
 pub mod steam;
 pub mod vigem;

@@ -1,6 +1,6 @@
 [package]
 name = "vbind-io"
-description = "Windows device input (DirectInput) and virtual device output (ViGEmBus, vJoy) for VBind"
+description = "Windows device input (DirectInput) and virtual device output (ViGEmBus, vJoy, keyboard and mouse) for VBind"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,6 +21,7 @@ features = [
   "Win32_UI_WindowsAndMessaging",
   "Win32_Graphics_Gdi",
   "Win32_UI_Input_XboxController",
+  "Win32_UI_Input_KeyboardAndMouse",
   "Win32_System_Memory",
   "Win32_System_Registry",
   "Win32_Security",

@@ -21,7 +21,7 @@ import {
   status,
   varInputs,
 } from "../state";
-import { fmt, Lamp, Markdown, Meter, TONES, vjoyControls, XBOX_CONTROLS } from "./bits";
+import { fmt, keyboardControls, Lamp, Markdown, Meter, TONES, vjoyControls, XBOX_CONTROLS } from "./bits";
 import { shortName } from "./WiringBoard";
 
 /** Expression to start a new mapping with (set by "Map to an output"). */
@@ -79,6 +79,7 @@ function Inspector() {
 type OutControl = Graph["outputs"][number]["controls"][number];
 
 function controlKind(outKind: string, control: string): OutControl["kind"] {
+  if (outKind === "keyboard") return ["mouse.x", "mouse.y", "mouse.wheel"].includes(control) ? "axis" : "button";
   if (outKind === "xbox360") {
     if (control === "lt" || control === "rt") return "trigger";
     if (["lx", "ly", "rx", "ry"].includes(control)) return "axis";
@@ -174,7 +175,7 @@ function OutputEditor({ profile, g, outName, existing }: { profile: string; g: G
   const mapped = new Set(out?.controls.map((c) => c.control) ?? []);
   const integ = out?.kind === "integration" ? integrations.value.find((i) => i.id === out.integration) : undefined;
   const options: [string, string][] =
-    out?.kind === "vjoy" ? vjoyControls() : integ ? (integ.controls ?? []).map((c) => [c.id, c.label]) : XBOX_CONTROLS;
+    out?.kind === "vjoy" ? vjoyControls() : out?.kind === "keyboard" ? keyboardControls() : integ ? (integ.controls ?? []).map((c) => [c.id, c.label]) : XBOX_CONTROLS;
   const free = options.filter(([id]) => !mapped.has(id));
   const [control, setControl] = useState(existing?.control ?? free[0]?.[0] ?? "");
   const [expr, setExpr] = useState(existing?.expr ?? draftExpr.value);

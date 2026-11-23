@@ -96,6 +96,35 @@ export const XBOX_CONTROLS: [string, string][] = [
   ["dpad_up", "D-pad up"], ["dpad_down", "D-pad down"], ["dpad_left", "D-pad left"], ["dpad_right", "D-pad right"],
 ];
 
+/** Keyboard output controls, by US layout key position (matches the engine's list). */
+export function keyboardControls(): [string, string][] {
+  const out: [string, string][] = [];
+  const key = (id: string, label: string) => out.push([`key.${id}`, label]);
+  for (const c of "abcdefghijklmnopqrstuvwxyz") key(c, c.toUpperCase());
+  for (const d of "1234567890") key(d, d);
+  for (let f = 1; f <= 24; f++) key(`f${f}`, `F${f}`);
+  const named: [string, string][] = [
+    ["lalt", "Left Alt"], ["ralt", "Right Alt"], ["lctrl", "Left Ctrl"], ["rctrl", "Right Ctrl"],
+    ["lshift", "Left Shift"], ["rshift", "Right Shift"], ["lwin", "Left Windows"], ["rwin", "Right Windows"], ["menu", "Menu"],
+    ["space", "Space"], ["enter", "Enter"], ["esc", "Esc"], ["tab", "Tab"], ["backspace", "Backspace"], ["capslock", "Caps Lock"],
+    ["up", "Up"], ["down", "Down"], ["left", "Left"], ["right", "Right"],
+    ["insert", "Insert"], ["delete", "Delete"], ["home", "Home"], ["end", "End"], ["pageup", "Page Up"], ["pagedown", "Page Down"],
+    ["printscreen", "Print Screen"], ["scrolllock", "Scroll Lock"], ["numlock", "Num Lock"],
+    ["grave", "`"], ["minus", "-"], ["equals", "="], ["lbracket", "["], ["rbracket", "]"], ["backslash", "\\"],
+    ["semicolon", ";"], ["apostrophe", "'"], ["comma", ","], ["period", "."], ["slash", "/"],
+    ["numpad_divide", "Numpad /"], ["numpad_multiply", "Numpad *"], ["numpad_minus", "Numpad -"], ["numpad_plus", "Numpad +"],
+    ["numpad_enter", "Numpad Enter"], ["numpad_decimal", "Numpad ."],
+  ];
+  for (const [id, label] of named) key(id, label);
+  for (let n = 0; n <= 9; n++) key(`numpad${n}`, `Numpad ${n}`);
+  out.push(
+    ["mouse.x", "Mouse left/right"], ["mouse.y", "Mouse up/down"], ["mouse.wheel", "Mouse wheel"],
+    ["mouse.left", "Left mouse button"], ["mouse.right", "Right mouse button"], ["mouse.middle", "Middle mouse button"],
+    ["mouse.x1", "Mouse back button"], ["mouse.x2", "Mouse forward button"],
+  );
+  return out;
+}
+
 export function vjoyControls(): [string, string][] {
   const out: [string, string][] = ["x", "y", "z", "rx", "ry", "rz", "slider1", "slider2"].map((a) => [a, `Axis ${a.toUpperCase()}`]);
   for (let b = 1; b <= 32; b++) out.push([`b${b}`, `Button ${b}`]);

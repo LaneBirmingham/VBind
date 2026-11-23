@@ -5,6 +5,7 @@ pub mod drawing;
 pub mod expr;
 pub mod graph;
 pub mod integration;
+pub mod keyboard;
 pub mod layout;
 pub mod math;
 pub mod output;

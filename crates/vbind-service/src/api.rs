@@ -351,6 +351,7 @@ async fn status(State(st): State<Shared>) -> ApiResult {
         "outputs": {
             "xbox360": { "available": snap.vigem_error.is_none(), "error": snap.vigem_error },
             "vjoy": { "available": snap.vjoy_error.is_none(), "error": snap.vjoy_error, "devices": snap.vjoy_devices },
+            "keyboard": { "available": true, "error": null },
         },
         "input_error": snap.input_error,
         "integrations": st.store.integrations.list().iter().map(|i| json!({ "id": i.id, "valid": i.def.is_some() })).collect::<Vec<_>>(),
@@ -433,11 +434,23 @@ fn state_json(s: &DeviceState) -> Value {
 
 fn report_json(r: &Report, out: &vbind_core::profile::CompiledOutput) -> Value {
     match r {
-        Report::Integration(values) => {
-            let ids = out.integration.as_ref().map(|i| i.controls.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
-            Value::Object(ids.into_iter().zip(values).map(|(k, v)| (k, json!(round3(*v)))).collect())
+        Report::Integration { controls, settings } => {
+            let Some(def) = out.integration.as_ref() else { return json!({}) };
+            let mut obj: serde_json::Map<String, Value> =
+                def.controls.keys().cloned().zip(controls).map(|(k, v)| (k, json!(round3(*v)))).collect();
+            // mapped settings show the value the game gets, for example "DirectThrust"
+            for &i in &out.live_settings {
+                if let (Some((id, s)), Some(v)) = (def.settings.get_index(i), settings.get(i)) {
+                    obj.insert(format!("{}{id}", vbind_core::profile::SETTINGS_PREFIX), vbind_core::integration::setting_from_number(s, *v));
+                }
+            }
+            Value::Object(obj)
         }
         Report::Xbox(x) => serde_json::to_value(x).unwrap_or(Value::Null),
+        Report::Keyboard(k) => json!({
+            "held": k.held(),
+            "mouse": { "x": round3(k.mouse[0]), "y": round3(k.mouse[1]), "wheel": round3(k.mouse[2]) },
+        }),
         Report::Vjoy(v) => json!({
             "axes": v.axes.iter().map(|a| round3(*a)).collect::<Vec<_>>(),
             "buttons": v.buttons.iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i + 1).collect::<Vec<_>>(),
