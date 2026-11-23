@@ -1,0 +1,85 @@
+{
+  "vbind": 1,
+  "id": "galactic-racer-dual-hosas",
+  "name": "Galactic Racer - Dual HOSAS",
+  "description": "Converted from the Galactic Racer HOSAS Bridge (Podracer Style (HOSAS) mode). Both sticks forward to accelerate, push one further than the other to steer, both back to brake.",
+  "game": "STAR WARS: Galactic Racer",
+  "devices": {
+    "left": {
+      "label": "Left hand stick",
+      "match": [
+        {
+          "vid": "044F",
+          "pid": "B10A"
+        }
+      ]
+    },
+    "right": {
+      "label": "Right hand stick",
+      "match": [
+        {
+          "vid": "046D",
+          "pid": "C215"
+        }
+      ]
+    }
+  },
+  "outputs": {
+    "pad": {
+      "type": "xbox360",
+      "label": "Virtual Xbox 360"
+    }
+  },
+  "vars": {
+    "l": {
+      "expr": "deadzone(-left.y, 0.06)",
+      "label": "Left stick thrust"
+    },
+    "r": {
+      "expr": "deadzone(-right.y, 0.06)",
+      "label": "Right stick thrust"
+    },
+    "drive": {
+      "expr": "hosas_drive(l, r)",
+      "label": "Thrust, stronger stick wins"
+    },
+    "steer": {
+      "expr": "clamp(l - r, -1, 1)",
+      "label": "Steering, left minus right"
+    }
+  },
+  "map": {
+    "pad.rt": "max(drive, 0)",
+    "pad.lt": "max(-drive, 0)",
+    "pad.lx": "steer",
+    "pad.a": "left.b1",
+    "pad.b": "right.b3",
+    "pad.back": "right.b11",
+    "pad.dpad_down": "left.hat1.down",
+    "pad.dpad_left": "left.hat1.left",
+    "pad.dpad_right": "left.hat1.right",
+    "pad.dpad_up": "left.hat1.up",
+    "pad.lb": "left.b2",
+    "pad.rb": "right.hat1.up",
+    "pad.rs": "right.b4",
+    "pad.start": "right.b12",
+    "pad.x": "right.b1"
+  },
+  "labels": {
+    "pad.rt": "Accelerate",
+    "pad.lt": "Brake / reverse",
+    "pad.lx": "Steer",
+    "pad.a": "Boost",
+    "pad.b": "Malfunction recovery",
+    "pad.back": "View build",
+    "pad.dpad_down": "Ability 4",
+    "pad.dpad_left": "Ability 2",
+    "pad.dpad_right": "Ability 3",
+    "pad.dpad_up": "Ability 1",
+    "pad.lb": "Activate ability",
+    "pad.rb": "Change camera",
+    "pad.rs": "Toggle boost mode",
+    "pad.start": "Pause",
+    "pad.x": "Advanced maneuver"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "vbind",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Build tooling for the VBind desktop app",
+  "scripts": {
+    "ui": "npm --prefix ui run build",
+    "cli": "cargo build --release -p vbind-cli",
+    "stage": "node scripts/stage-sidecar.mjs",
+    "icons": "tauri icon ui/public/icon.svg -o crates/vbind-app/icons",
+    "app": "npm run ui && npm run cli && npm run stage && tauri build",
+    "dev": "npm run ui && npm run cli && npm run stage && cargo run -p vbind-app"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}

@@ -1,0 +1,152 @@
+//! Device layout cards: a shareable description of what a device's controls
+//! are called and where they sit, so the UI can label and draw it.
+
+use crate::expr::InputControl;
+use crate::profile::{Diagnostic, DeviceMatch, is_valid_id};
+use crate::state::DeviceInfo;
+use indexmap::IndexMap;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+pub const LAYOUT_FORMAT: u32 = 1;
+
+/// Outline the UI draws behind the control markers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Shape {
+    /// Flight stick seen from the side: grip on a base.
+    Stick,
+    /// Throttle quadrant.
+    Throttle,
+    Gamepad,
+    Wheel,
+    Pedals,
+    /// A plain panel.
+    #[default]
+    Generic,
+}
+
+/// One physical control.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ControlInfo {
+    /// What the control is, for example "Trigger" or "Thumb button (top of grip)".
+    pub label: String,
+    /// Where it sits, for grouping: "grip", "head", "base", "throttle".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Position on the shape drawing, `[x, y]` from 0 to 100 (top left is 0, 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<[f32; 2]>,
+}
+
+/// A device layout card.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(title = "VBind device layout")]
+pub struct DeviceLayout {
+    #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    /// Layout format version. Always 1 for now.
+    pub vbind_layout: u32,
+    /// Lowercase id, for example "thrustmaster-t16000m".
+    pub id: String,
+    /// Product name shown in the UI.
+    pub name: String,
+    /// Which devices this layout describes.
+    #[serde(rename = "match")]
+    pub matches: Vec<DeviceMatch>,
+    #[serde(default)]
+    pub shape: Shape,
+    /// Controls by id: axes (`x`, `y`, `rz`, `slider1`), buttons (`b1`), hats (`hat1`).
+    pub controls: IndexMap<String, ControlInfo>,
+    /// Controls the driver reports that do not physically exist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<String>,
+}
+
+impl DeviceLayout {
+    pub fn validate(&self) -> Vec<Diagnostic> {
+        let mut errs = Vec::new();
+        let d = |path: String, message: String| Diagnostic { path, message, pos: None };
+        if self.vbind_layout != LAYOUT_FORMAT {
+            errs.push(d("vbind_layout".into(), format!("unsupported layout format; use {LAYOUT_FORMAT}")));
+        }
+        if !is_valid_id(&self.id) {
+            errs.push(d("id".into(), "use lowercase letters, digits and dashes".into()));
+        }
+        if self.matches.is_empty() || self.matches.iter().any(DeviceMatch::is_empty) {
+            errs.push(d("match".into(), "give at least one vid/pid/name to recognise the device".into()));
+        }
+        for (key, info) in &self.controls {
+            if let Err(m) = parse_layout_control(key) {
+                errs.push(d(format!("controls.{key}"), m));
+            }
+            if let Some([x, y]) = info.pos {
+                if !(0.0..=100.0).contains(&x) || !(0.0..=100.0).contains(&y) {
+                    errs.push(d(format!("controls.{key}.pos"), "positions run from 0 to 100".into()));
+                }
+            }
+        }
+        for key in &self.hidden {
+            if let Err(m) = parse_layout_control(key) {
+                errs.push(d(format!("hidden.{key}"), m));
+            }
+        }
+        errs
+    }
+
+    pub fn matches(&self, device: &DeviceInfo) -> bool {
+        self.matches.iter().any(|m| m.matches(device))
+    }
+
+    /// Label for an input control. Hat directions use the hat's entry plus the
+    /// direction: "Thumb hat up".
+    pub fn label(&self, control: &InputControl) -> Option<String> {
+        let base = &self.controls.get(&layout_key(control))?.label;
+        Some(match control {
+            InputControl::HatDir(_, d) => format!("{base} {}", d.name().replace('_', "-")),
+            InputControl::HatX(_) => format!("{base} left/right"),
+            InputControl::HatY(_) => format!("{base} up/down"),
+            _ => base.clone(),
+        })
+    }
+}
+
+/// The layout key a control is described under (`hat1.up` lives under `hat1`).
+pub fn layout_key(control: &InputControl) -> String {
+    match control {
+        InputControl::HatDir(h, _) | InputControl::HatX(h) | InputControl::HatY(h) => format!("hat{}", h + 1),
+        other => other.id(),
+    }
+}
+
+fn parse_layout_control(key: &str) -> Result<(), String> {
+    if let Some(n) = key.strip_prefix("hat") {
+        return match n.parse::<usize>() {
+            Ok(1..=4) => Ok(()),
+            _ => Err("hats are hat1 to hat4".into()),
+        };
+    }
+    InputControl::parse(&[key]).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_and_labels() {
+        let l: DeviceLayout = serde_json::from_str(
+            r#"{"vbind_layout":1,"id":"t16000m","name":"T.16000M","match":[{"vid":"044F","pid":"B10A"}],
+                "shape":"stick","controls":{"b1":{"label":"Trigger","pos":[30,40]},"hat1":{"label":"Hat"},"y":{"label":"Pitch"}}}"#,
+        )
+        .unwrap();
+        assert!(l.validate().is_empty());
+        assert_eq!(l.label(&InputControl::Button(0)).as_deref(), Some("Trigger"));
+        assert_eq!(l.label(&InputControl::HatDir(0, crate::expr::HatDir::Up)).as_deref(), Some("Hat up"));
+        let mut bad = l.clone();
+        bad.controls.insert("b999".into(), ControlInfo { label: "x".into(), group: None, pos: Some([120.0, 0.0]) });
+        assert_eq!(bad.validate().len(), 2);
+    }
+}

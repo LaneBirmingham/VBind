@@ -1,0 +1,22 @@
+{
+  "name": "vbind-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@preact/signals": "2.11.4",
+    "dompurify": "3.5.0",
+    "marked": "18.2.1",
+    "preact": "10.29.8"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "2.10.6",
+    "typescript": "5.9.3",
+    "vite": "7.3.8"
+  }
+}
