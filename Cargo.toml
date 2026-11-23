@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[workspace.dependencies]
+vbind-core = { path = "crates/vbind-core" }
+vbind-io = { path = "crates/vbind-io" }
+vbind-service = { path = "crates/vbind-service" }

@@ -1,0 +1,30 @@
+{
+  "vbind_layout": 1,
+  "id": "thrustmaster-t16000m",
+  "name": "Thrustmaster T.16000M FCS",
+  "match": [{ "vid": "044F", "pid": "B10A" }],
+  "shape": "stick",
+  "controls": {
+    "x": { "label": "Stick left/right", "group": "grip", "pos": [66, 40] },
+    "y": { "label": "Stick forward/back", "group": "grip", "pos": [35, 50] },
+    "rz": { "label": "Twist", "group": "grip", "pos": [64, 54] },
+    "slider1": { "label": "Throttle wheel", "group": "base", "pos": [80, 88] },
+    "hat1": { "label": "Thumb hat", "group": "head", "pos": [56, 6] },
+    "b1": { "label": "Trigger", "group": "grip", "pos": [36, 30] },
+    "b2": { "label": "Thumb button", "group": "head", "pos": [43, 9] },
+    "b3": { "label": "Top button left", "group": "head", "pos": [41, 19] },
+    "b4": { "label": "Top button right", "group": "head", "pos": [64, 20] },
+    "b5": { "label": "Base left, top row 1", "group": "base" },
+    "b6": { "label": "Base left, top row 2", "group": "base" },
+    "b7": { "label": "Base left, top row 3", "group": "base" },
+    "b8": { "label": "Base left, bottom row 3", "group": "base" },
+    "b9": { "label": "Base left, bottom row 2", "group": "base" },
+    "b10": { "label": "Base left, bottom row 1", "group": "base" },
+    "b11": { "label": "Base right, top row 1", "group": "base" },
+    "b12": { "label": "Base right, top row 2", "group": "base" },
+    "b13": { "label": "Base right, top row 3", "group": "base" },
+    "b14": { "label": "Base right, bottom row 3", "group": "base" },
+    "b15": { "label": "Base right, bottom row 2", "group": "base" },
+    "b16": { "label": "Base right, bottom row 1", "group": "base" }
+  }
+}

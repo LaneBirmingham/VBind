@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VBind",
+  "mainBinaryName": "vbind-app",
+  "version": "0.1.0",
+  "identifier": "app.vbind.desktop",
+  "build": {
+    "frontendDist": "../../ui/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "VBind",
+    "shortDescription": "Map game controllers to virtual Xbox and vJoy devices",
+    "longDescription": "VBind maps physical game controllers to virtual Xbox 360 controllers and vJoy sticks. It is built to be set up by your AI agent through its command line and MCP server.",
+    "category": "Utility",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "externalBin": ["binaries/vbind"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

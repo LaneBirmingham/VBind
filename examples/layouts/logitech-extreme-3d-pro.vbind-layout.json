@@ -1,0 +1,26 @@
+{
+  "vbind_layout": 1,
+  "id": "logitech-extreme-3d-pro",
+  "name": "Logitech Extreme 3D Pro",
+  "match": [{ "vid": "046D", "pid": "C215" }],
+  "shape": "stick",
+  "controls": {
+    "x": { "label": "Stick left/right", "group": "grip", "pos": [66, 34] },
+    "y": { "label": "Stick forward/back", "group": "grip", "pos": [36, 52] },
+    "rz": { "label": "Twist", "group": "grip", "pos": [64, 48] },
+    "slider1": { "label": "Throttle lever", "group": "base", "pos": [22, 88] },
+    "hat1": { "label": "Hat switch", "group": "head", "pos": [54, 5] },
+    "b1": { "label": "Trigger", "group": "grip", "pos": [36, 29] },
+    "b2": { "label": "Thumb button", "group": "grip", "pos": [37, 40] },
+    "b3": { "label": "Head button 3 (lower left)", "group": "head", "pos": [41, 18] },
+    "b4": { "label": "Head button 4 (lower right)", "group": "head", "pos": [64, 22] },
+    "b5": { "label": "Head button 5 (upper left)", "group": "head", "pos": [43, 9] },
+    "b6": { "label": "Head button 6 (upper right)", "group": "head", "pos": [65, 13] },
+    "b7": { "label": "Base button 7", "group": "base" },
+    "b8": { "label": "Base button 8", "group": "base" },
+    "b9": { "label": "Base button 9", "group": "base" },
+    "b10": { "label": "Base button 10", "group": "base" },
+    "b11": { "label": "Base button 11", "group": "base" },
+    "b12": { "label": "Base button 12", "group": "base" }
+  }
+}
