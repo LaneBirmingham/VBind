@@ -3,6 +3,7 @@ name = "vbind-app"
 description = "VBind desktop app: the engine plus its window"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
