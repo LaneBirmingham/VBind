@@ -60,6 +60,25 @@ their own devices for each role. `vbind schema profile` prints the full JSON
 schema, and the expression language is documented in the
 [agent guide](AGENT_GUIDE.md#expressions).
 
+### Keyboard and mouse output
+
+A profile can also drive the keyboard and mouse, for games or actions that
+only take keyboard and mouse input. Keys are held while their expression is
+true; mouse movement and the scroll wheel take an axis as a speed. For
+example, a hat that holds Alt and moves the mouse for free look:
+
+```json
+"outputs": { "kbm": { "type": "keyboard", "settings": { "mouse_speed": 900 } } },
+"map": { "kbm.key.lalt": "right.hat1.x != 0 || right.hat1.y != 0",
+         "kbm.mouse.x": "right.hat1.x", "kbm.mouse.y": "-right.hat1.y" }
+```
+
+A profile can use several outputs at once, such as an Xbox pad plus a few
+keys the game has no controller binding for. Key names and settings are in
+[Outputs](AGENT_GUIDE.md#outputs) in the agent guide.
+
+### Example
+
 [`examples/profiles/galactic-racer-dual-hosas.vbind.json`](../examples/profiles/galactic-racer-dual-hosas.vbind.json)
 is a complete two-stick HOSAS setup for STAR WARS: Galactic Racer, converted
 from the Galactic Racer HOSAS Bridge with `vbind import hosas-bridge`.
