@@ -3,6 +3,7 @@ name = "vbind-cli"
 description = "vbind: command line and MCP server for driving VBind from an AI agent"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 

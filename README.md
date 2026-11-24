@@ -1,129 +1,67 @@
 # VBind
 
-VBind maps physical game controllers (flight sticks, throttles, wheels, pedals,
-pads) to virtual devices on Windows: a virtual Xbox 360 controller, or a vJoy
-flight stick that merges several sticks into one device.
+**An agent-first controller mapper for Windows.** Plug in flight sticks,
+throttles, wheels or pedals, tell your AI coding agent what you want, and VBind
+turns them into a virtual Xbox 360 controller or vJoy stick that any game can
+read.
 
-It is agent-first. VBind ships with no mappings. Your AI coding agent connects
-to it through MCP or the `vbind` command line, finds your devices, asks you to
-press controls, writes the mapping, tests it, and shows its progress in the
-VBind window. The window's wiring board shows every mapping live, so you can
-see exactly which physical control drives which virtual one.
+VBind ships with no mappings. Your agent (Claude Code, Codex, Cursor, ...)
+connects to it over MCP or the `vbind` CLI, finds your devices, asks you to
+press controls, writes the mapping, tests it and shows its progress in the
+VBind window. You watch and approve.
 
-The Picture view shows the same mapping on drawings of your own devices: every
-mapped control points at the game button it drives ("A - Boost"), lights up as
-you press it, and can carry a memory hint. A trainer shows a game button the
-way a game does and waits for you to press it on your sticks, so you learn
-which control "Press A" means. VBind ships no device art: your agent draws
-any device from a kit of generic parts and SVG paths, checks its drawing by
-rendering it, and can line it up with your own photo, which stays on your PC.
+![The wiring board: two physical sticks mixed into one virtual Xbox controller](docs/images/wiring.png)
 
-Game integrations are optional, per-PC add-ons for games without useful
-controller support. Where someone has written a game-side plugin that takes
-input from outside (Kontrol adapters, for example), an integration file
-tells VBind how to reach it through shared memory; profiles then map sticks
-straight to the game's own actions with full analog input. VBind ships no
-integrations and nothing game-specific: your agent writes the file, and
-VBind installs the plugin into the game only when you agree, shows whether
-it is running, and removes it cleanly.
+## Quick start
 
-## Install
+VBind is built from source by your coding agent. You need Windows 10/11 and an
+agent that can run commands. Paste this into it:
 
-Run `VBind_<version>_x64-setup.exe`. It installs per user into
-`%LOCALAPPDATA%\VBind`:
+> Clone https://github.com/LaneBirmingham/VBind, follow its
+> docs/BUILDING.md to build and install VBind, then connect yourself to it
+> over MCP. After that, use VBind to map my game controllers to a virtual Xbox
+> controller for &lt;your game&gt;. Show me the plan in the VBind window first.
 
-- `vbind-app.exe`: the app (Start menu: VBind). Closing the window keeps your
-  mapping running from the tray; use Quit in the tray menu to stop it.
-- `vbind.exe`: the command line and MCP server your agent uses.
+The agent installs the toolchain it needs (Rust, Node), builds the installer,
+installs [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) for the
+virtual Xbox pad (with your OK), and registers the MCP server. From then on
+you just ask it for mappings in plain words.
 
-Drivers:
+## What you get
 
-- Virtual Xbox controllers need [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases).
-- Virtual flight sticks need [vJoy](https://github.com/BrunnerInnovation/vJoy/releases),
-  with device 1 configured in "Configure vJoy".
+- **Wiring board** - every mapping live, from physical control through any
+  mixing math to the virtual button it drives. Click anything to inspect or
+  edit it.
+- **Picture view** - drawings of your own devices with each control labelled by
+  the game action it triggers ("A - Boost"). Controls light up as you press
+  them. Your agent draws the devices; add a photo of your own if you like (it
+  never leaves your PC).
+- **Trainer** - shows a game button the way the game does and waits for you to
+  press it on your sticks, so your hands learn what "Press A" means.
+- **Expressions, not just bindings** - deadzones, curves, mixing two sticks into
+  one axis, shift layers, toggles, double-taps, keyboard and mouse output.
+- **Portable profiles** - one JSON file per game, matching devices by USB id so
+  it works on other PCs. Export and share.
+- **Runs in the tray** - close the window and your mapping keeps running.
 
-Your profiles, device choices and layouts live in `%APPDATA%\VBind`.
-
-## Connect your agent
-
-Click **Connect agent** in the app for copy-ready commands, or:
-
-```
-claude mcp add --scope user vbind -- "%LOCALAPPDATA%\VBind\vbind.exe" mcp
-codex mcp add vbind -- "%LOCALAPPDATA%\VBind\vbind.exe" mcp
-```
-
-Other MCP apps: command `%LOCALAPPDATA%\VBind\vbind.exe`, args `["mcp"]`.
-Agents without MCP can run `vbind.exe guide` and use the CLI directly.
-
-Then ask something like: "Use VBind to map my two flight sticks to a virtual
-Xbox controller for my game. Show me the plan in the VBind window first."
-
-The agent's reference is [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) (also
-`vbind guide`, the MCP `vbind_guide` tool, and the `vbind://guide` resource).
-
-## Profiles
-
-A profile is one JSON file: device roles (matched by USB id or name, so it
-works on other PCs), optional variables, and one expression per virtual
-control, for example:
-
-```json
-{
-  "vbind": 1,
-  "id": "two-sticks",
-  "name": "Two sticks",
-  "devices": {
-    "left": { "label": "Left stick", "match": [{ "vid": "044F", "pid": "B10A" }] },
-    "right": { "label": "Right stick", "match": [{ "vid": "046D", "pid": "C215" }] }
-  },
-  "outputs": { "pad": { "type": "xbox360" } },
-  "vars": { "drive": "hosas_drive(deadzone(-left.y, 0.06), deadzone(-right.y, 0.06))" },
-  "map": {
-    "pad.rt": "max(drive, 0)",
-    "pad.lt": "max(-drive, 0)",
-    "pad.a": "left.b1"
-  },
-  "labels": { "pad.a": "Boost" }
-}
-```
-
-Share a profile with **Export** on the Profiles tab; whoever imports it picks
-their own devices for each role. `vbind schema profile` prints the full JSON
-schema. Layout cards (`examples/layouts`) name a device's controls and hold
-the agent's drawings of it, so the window can label and picture them. Share
-them the same way; photos are never included.
-
-`examples/profiles/galactic-racer-dual-hosas.vbind.json` is a complete
-two-stick HOSAS setup for STAR WARS: Galactic Racer, converted from the
-Galactic Racer HOSAS Bridge with `vbind import hosas-bridge`.
-
-## Build from source
-
-Needs Rust 1.90+ (MSVC) and Node 20+.
-
-```
-npm install
-npm --prefix ui install
-npm run app      # UI, CLI, sidecar, then the NSIS installer
-```
-
-The installer lands in `target\release\bundle\nsis`. Other scripts:
-`npm run ui` (window UI into `ui/dist`, embedded into the engine at build
-time), `npm run cli` (`target\release\vbind.exe`), `npm run dev` (run the
-app). `vbind serve` runs the engine headless; open the printed URL in a
-browser to get the same UI.
-
-Layout:
-
-| Path | What |
+| Picture view | Trainer |
 | --- | --- |
-| `crates/vbind-core` | Profiles, expression language, role matching, layouts, mapping graph |
-| `crates/vbind-io` | DirectInput reading, ViGEmBus and vJoy output, XInput readback |
-| `crates/vbind-service` | Engine thread (500 Hz), local HTTP API with live events, agent panel |
-| `crates/vbind-cli` | `vbind` command line and MCP server |
-| `crates/vbind-app` | Tauri 2 desktop app |
-| `ui` | Window UI (Preact + Vite) |
+| ![Picture view](docs/images/picture.png) | ![Trainer](docs/images/trainer.png) |
 
-`cargo test --workspace` runs the tests, including a check that the Galactic
-Racer import reproduces the bridge's math across the whole stick range.
+## Documentation
+
+| Doc | For |
+| --- | --- |
+| [docs/BUILDING.md](docs/BUILDING.md) | Building, installing, drivers, project layout, tests |
+| [docs/OVERVIEW.md](docs/OVERVIEW.md) | How VBind works: profiles, layouts, pictures, game integrations |
+| [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) | The agent's reference (also served as `vbind guide` and over MCP) |
+
+## Status
+
+Early (v0.1). Tested with a Thrustmaster T.16000M and a Logitech Extreme 3D
+Pro driving a virtual Xbox 360 controller. vJoy output is implemented but not
+yet tested on real hardware. Windows only.
+
+## License
+
+[MIT](LICENSE)
