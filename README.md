@@ -2,8 +2,9 @@
 
 **An agent-first controller mapper for Windows.** Plug in flight sticks,
 throttles, wheels or pedals, tell your AI coding agent what you want, and VBind
-turns them into a virtual Xbox 360 controller or vJoy stick that any game can
-read.
+turns them into a virtual Xbox 360 controller, a vJoy stick, or keyboard keys
+and mouse movement, so they work in any game, including games with no
+controller support at all.
 
 VBind ships with no mappings. Your agent (Claude Code, Codex, Cursor, ...)
 connects to it over MCP or the `vbind` CLI, finds your devices, asks you to
@@ -38,8 +39,12 @@ you just ask it for mappings in plain words.
   never leaves your PC).
 - **Trainer** - shows a game button the way the game does and waits for you to
   press it on your sticks, so your hands learn what "Press A" means.
+- **Joystick to keyboard and mouse** - map any button, hat or axis to key
+  presses, mouse buttons, mouse movement or the scroll wheel, for games and
+  actions that only take keyboard and mouse. Mix them freely with a virtual
+  Xbox pad in the same profile.
 - **Expressions, not just bindings** - deadzones, curves, mixing two sticks into
-  one axis, shift layers, toggles, double-taps, keyboard and mouse output.
+  one axis, shift layers, toggles and double-taps.
 - **Portable profiles** - one JSON file per game, matching devices by USB id so
   it works on other PCs. Export and share.
 - **Runs in the tray** - close the window and your mapping keeps running.
