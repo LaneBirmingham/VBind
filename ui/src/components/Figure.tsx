@@ -3,7 +3,7 @@
 // by an agent, optionally over the person's photo); without views, the
 // generic shape and positions are used.
 
-import { useMemo, useRef, useState } from "preact/hooks";
+import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { api, apiUrl, type DrawingView, type Graph, type GraphRef, type Layout, type LayoutControl } from "../api";
 import { drawings, errorText, layouts, notify, outputInputs, panel, roleInput } from "../state";
 import { SHAPES } from "./DeviceDrawing";
@@ -136,6 +136,8 @@ export function viewsFor(layout: Layout | null): PlacedView[] {
 const BOX_W = 244;
 const GAP = 30;
 const PAD = 10;
+/** How far past natural size the Devices tab pictures may grow. */
+const LIVE_MAX_GROW = 1.4;
 
 export type FigureMode = "drawing" | "photo";
 
@@ -227,15 +229,33 @@ export function ViewFigure({
     }
   };
 
+  // Trim the empty margin a view's drawing leaves around itself (and any spare
+  // room beside the callout stacks), so the picture fills its card. Measured
+  // after render; skipped mid-drag so the frame does not jump under the pointer.
+  const [crop, setCrop] = useState<[number, number, number, number] | null>(null);
+  useLayoutEffect(() => {
+    const svg = svgRef.current;
+    if (!svg || drag) return;
+    const b = svg.getBBox();
+    if (!b.width || !b.height) return;
+    const x0 = Math.max(0, b.x - PAD);
+    const y0 = Math.max(0, b.y - PAD);
+    const next: [number, number, number, number] = [x0, y0, Math.min(W, b.x + b.width + PAD) - x0, Math.min(H, b.y + b.height + PAD) - y0];
+    if (!crop || next.some((v, i) => Math.abs(v - crop[i]) > 0.5)) setCrop(next);
+  });
+  const [vx, vy, vw, vh] = crop ?? [0, 0, W, H];
+
   const photo = mode === "photo" ? view.photo : undefined;
   const clipId = `clip-${layout.id}-${view.id}`;
   return (
     <svg
       ref={svgRef}
       class={`figure${editing ? " editing" : ""}`}
-      width={W}
-      height={H}
-      viewBox={`0 0 ${W} ${H}`}
+      width={vw}
+      height={vh}
+      viewBox={`${vx} ${vy} ${vw} ${vh}`}
+      // Natural size at most; shrinks with the card so it never overflows.
+      style={{ width: "100%", maxWidth: `${Math.round(vw)}px` }}
       role="img"
       aria-label={`${layout.name}, ${view.label}`}
       onPointerMove={(e) => drag && setDrag({ key: drag.key, at: toView(e as unknown as PointerEvent) })}
@@ -335,17 +355,21 @@ export function refsOf(co: Callout): GraphRef[] {
 export function LiveViews({ layout, isOn, mapped }: { layout: Layout; isOn: (key: string) => boolean; mapped: (key: string) => boolean }) {
   const views = viewsFor(layout).filter((pv) => pv.real);
   if (!views.length) return null;
+  // Natural size per view (keeps the views' relative scale), then the row as a
+  // whole scales to the card width, up to LIVE_MAX_GROW past natural.
+  const scaleOf = ([w, h]: [number, number]) => Math.min(220 / h, 260 / w);
+  const natural = views.reduce((t, pv) => t + pv.view.size[0] * scaleOf(pv.view.size) + 12, 0) + 18 * (views.length - 1);
   return (
-    <div class="live-views">
+    <div class="live-views" style={{ maxWidth: `${Math.round(natural * LIVE_MAX_GROW)}px` }}>
       {views.map((pv) => {
         const [w, h] = pv.view.size;
-        const s = Math.min(220 / h, 260 / w);
+        const s = scaleOf(pv.view.size);
         const pts = Object.entries(layout.controls).flatMap(([k, c]) => {
           const at = pv.at(k, c);
           return at ? [{ k, c, at }] : [];
         });
         return (
-          <figure>
+          <figure style={{ flexGrow: w * s + 12 }}>
             <svg class="figure" width={w * s + 12} height={h * s + 12} viewBox={`-6 -6 ${w * s + 12} ${h * s + 12}`} role="img" aria-label={`${layout.name}, ${pv.view.label}`}>
               <g transform={`scale(${s})`}>
                 {pv.view.shapes.map((sh) => (

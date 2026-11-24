@@ -213,7 +213,13 @@ export function WiringBoard({ onAddMapping }: { onAddMapping: (output: string) =
     }
   };
 
-  const columns = [`${COL_IN}px`, ...Array.from({ length: depths }, () => `${COL_MID}px`), `${COL_OUT}px`].join(" ");
+  // Columns start at their minimum and share any spare width up to a cap, so wide
+  // windows give mixer expressions and output names room instead of empty floor.
+  const columns = [
+    `minmax(${COL_IN}px, ${COL_IN * 1.5}px)`,
+    ...Array.from({ length: depths }, () => `minmax(${COL_MID}px, ${COL_MID * 1.75}px)`),
+    `minmax(${COL_OUT}px, ${COL_OUT * 1.5}px)`,
+  ].join(" ");
 
   return (
     <div>
